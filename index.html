@@ -22,22 +22,15 @@
       <h1>Bütçemiz</h1>
       <p class="muted">Uğur &amp; İzgi'nin ortak ev bütçesi</p>
       <form id="auth-form">
-        <label id="name-field" class="hidden">Adın
-          <select name="display_name">
-            <option>Uğur</option>
-            <option>İzgi</option>
-          </select>
-        </label>
-        <label>E-posta
-          <input type="email" name="email" autocomplete="email" required>
+        <label>Kullanıcı adı
+          <input name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
         </label>
         <label>Şifre
-          <input type="password" name="password" autocomplete="current-password" minlength="6" required>
+          <input type="password" name="password" autocomplete="current-password" required>
         </label>
         <button type="submit" class="btn primary" id="auth-submit">Giriş yap</button>
         <p id="auth-error" class="error"></p>
       </form>
-      <button type="button" class="link" id="auth-toggle">İlk kez mi? Hesap oluştur</button>
     </div>
   </section>
 
@@ -49,7 +42,10 @@
         <h2 id="month-label"></h2>
         <button class="icon-btn" id="next-month" aria-label="Sonraki ay">›</button>
       </div>
-      <button class="icon-btn small" id="logout" aria-label="Çıkış">⎋</button>
+      <div class="top-actions">
+        <button class="icon-btn small" id="change-password" aria-label="Şifre değiştir">🔑</button>
+        <button class="icon-btn small" id="logout" aria-label="Çıkış">⎋</button>
+      </div>
     </header>
 
     <main>
@@ -181,6 +177,24 @@
       </label>
       <div class="actions">
         <button type="button" class="btn danger hidden" id="inv-delete">Sil</button>
+        <button type="button" class="btn ghost" data-close>Vazgeç</button>
+        <button type="submit" class="btn primary">Kaydet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Şifre değiştirme -->
+  <dialog id="pw-dialog" class="sheet">
+    <form id="pw-form" method="dialog">
+      <h3>Şifre değiştir</h3>
+      <label>Yeni şifre
+        <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+      </label>
+      <label>Yeni şifre (tekrar)
+        <input type="password" name="password2" autocomplete="new-password" minlength="8" required>
+      </label>
+      <p id="pw-error" class="error"></p>
+      <div class="actions">
         <button type="button" class="btn ghost" data-close>Vazgeç</button>
         <button type="submit" class="btn primary">Kaydet</button>
       </div>

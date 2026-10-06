@@ -58,44 +58,50 @@ function fail(error) {
 }
 
 // ---------- kimlik doğrulama ----------
-let signUpMode = false;
-
-$('#auth-toggle').addEventListener('click', () => {
-  signUpMode = !signUpMode;
-  $('#name-field').classList.toggle('hidden', !signUpMode);
-  $('#auth-submit').textContent = signUpMode ? 'Hesap oluştur' : 'Giriş yap';
-  $('#auth-toggle').textContent = signUpMode ? 'Zaten hesabın var mı? Giriş yap' : 'İlk kez mi? Hesap oluştur';
-  $('#auth-error').textContent = '';
-});
+// Kullanıcı adıyla giriş: Supabase arka planda e-posta istediği için kullanıcı adı sabit bir
+// sahte alan adına çevrilir (ugur → ugur@butcemiz.local). Bu adrese hiç e-posta gönderilmez.
+// Kayıt olma kapalı; hesaplar yönetici tarafından oluşturulur.
+function usernameToEmail(username) {
+  const map = { ç: 'c', ğ: 'g', ı: 'i', i̇: 'i', ö: 'o', ş: 's', ü: 'u' };
+  const clean = username.trim().toLocaleLowerCase('tr').replace(/[çğıöşü]|i̇/g, (c) => map[c]);
+  return `${clean}@butcemiz.local`;
+}
 
 $('#auth-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  const email = f.get('email').trim();
-  const password = f.get('password');
   $('#auth-error').textContent = '';
   $('#auth-submit').disabled = true;
-  try {
-    if (signUpMode) {
-      const { data, error } = await sb.auth.signUp({
-        email, password,
-        options: { data: { display_name: f.get('display_name') }, emailRedirectTo: location.origin + location.pathname },
-      });
-      if (error) throw error;
-      if (!data.session) {
-        $('#auth-error').textContent = 'Hesap oluşturuldu. E-postana gelen onay bağlantısına tıkla, sonra giriş yap.';
-      }
-    } else {
-      const { error } = await sb.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-    }
-  } catch (err) {
-    const msg = err.message || String(err);
-    $('#auth-error').textContent = msg.includes('Invalid login') ? 'E-posta veya şifre hatalı.'
-      : msg.includes('Database error') ? 'Kayıt yapılamadı (hane 2 kişiyle dolu olabilir).' : msg;
-  } finally {
-    $('#auth-submit').disabled = false;
+  const { error } = await sb.auth.signInWithPassword({
+    email: usernameToEmail(f.get('username')), password: f.get('password'),
+  });
+  if (error) {
+    $('#auth-error').textContent = error.message.includes('Invalid login') ? 'Kullanıcı adı veya şifre hatalı.' : error.message;
   }
+  $('#auth-submit').disabled = false;
+});
+
+// Şifre değiştirme
+$('#change-password').addEventListener('click', () => {
+  $('#pw-form').reset();
+  $('#pw-error').textContent = '';
+  $('#pw-dialog').showModal();
+});
+
+$('#pw-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  if (f.password.value !== f.password2.value) {
+    $('#pw-error').textContent = 'Şifreler aynı değil.';
+    return;
+  }
+  const { error } = await sb.auth.updateUser({ password: f.password.value });
+  if (error) {
+    $('#pw-error').textContent = error.message.includes('different from the old') ? 'Yeni şifre eskisiyle aynı olamaz.' : error.message;
+    return;
+  }
+  $('#pw-dialog').close();
+  toast('Şifren değiştirildi');
 });
 
 $('#logout').addEventListener('click', () => sb.auth.signOut());

@@ -15,9 +15,9 @@ Ortak ev bütçesi ve alışveriş listesi. iPhone ve Android'de çalışan, ana
 1. **Supabase:** Projede SQL Editor'ü aç ve `supabase/schema.sql` dosyasını çalıştır.
 2. `config.js` dosyasına projenin URL'sini ve anon (publishable) anahtarını yaz.
 3. Klasörü statik bir hostinge yükle (GitHub Pages, Netlify, Cloudflare Pages…). HTTPS şart.
-4. İkiniz de uygulamayı açıp **"Hesap oluştur"** ile kaydolun (adınızı seçerek).
-   - Hane en fazla 2 kişi kabul eder; üçüncü kayıt veritabanı tarafından reddedilir.
-   - İkiniz de kaydolduktan sonra Supabase → Authentication → Sign In / Providers → **"Allow new users to sign up"** seçeneğini kapatmanız önerilir.
+4. Hesaplar kullanıcı adı + şifre ile çalışır (arka planda `kullaniciadi@butcemiz.local`, e-posta gönderilmez).
+   Kayıt olma veritabanı seviyesinde kapalıdır; yeni hesap sadece Supabase SQL Editor'den açılabilir.
+   Şifreler uygulamadaki 🔑 butonundan değiştirilebilir.
 
 ## Telefona yükleme
 

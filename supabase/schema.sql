@@ -20,8 +20,12 @@ returns trigger
 language plpgsql
 security definer
 set search_path = ''
-as $$
+as $
 begin
+  -- Kayıt olma kapalı: Auth API'sinden gelen kayıtlar reddedilir, hesaplar yönetici SQL'i ile açılır.
+  if session_user = 'supabase_auth_admin' then
+    raise exception 'Kayıt olma kapalı.';
+  end if;
   if (select count(*) from public.profiles) >= 2 then
     raise exception 'Bu hane zaten 2 üyeye sahip.';
   end if;
