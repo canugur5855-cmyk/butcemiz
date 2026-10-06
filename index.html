@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bütçemiz">
+  <title>Bütçemiz</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Giriş ekranı -->
+  <section id="auth-view" class="auth hidden">
+    <div class="auth-card">
+      <div class="logo">₺</div>
+      <h1>Bütçemiz</h1>
+      <p class="muted">Uğur &amp; İzgi'nin ortak ev bütçesi</p>
+      <form id="auth-form">
+        <label id="name-field" class="hidden">Adın
+          <select name="display_name">
+            <option>Uğur</option>
+            <option>İzgi</option>
+          </select>
+        </label>
+        <label>E-posta
+          <input type="email" name="email" autocomplete="email" required>
+        </label>
+        <label>Şifre
+          <input type="password" name="password" autocomplete="current-password" minlength="6" required>
+        </label>
+        <button type="submit" class="btn primary" id="auth-submit">Giriş yap</button>
+        <p id="auth-error" class="error"></p>
+      </form>
+      <button type="button" class="link" id="auth-toggle">İlk kez mi? Hesap oluştur</button>
+    </div>
+  </section>
+
+  <!-- Ana uygulama -->
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <div class="month-nav">
+        <button class="icon-btn" id="prev-month" aria-label="Önceki ay">‹</button>
+        <h2 id="month-label"></h2>
+        <button class="icon-btn" id="next-month" aria-label="Sonraki ay">›</button>
+      </div>
+      <button class="icon-btn small" id="logout" aria-label="Çıkış">⎋</button>
+    </header>
+
+    <main>
+      <!-- ÖZET -->
+      <section id="tab-summary" class="tab">
+        <div class="cards">
+          <div class="card stat income"><span>Gelir</span><strong id="sum-income"></strong></div>
+          <div class="card stat expense"><span>Gider</span><strong id="sum-expense"></strong></div>
+          <div class="card stat net"><span>Kenara kalan</span><strong id="sum-net"></strong><small id="sum-rate"></small></div>
+          <div class="card stat invest"><span>Yatırıma giden</span><strong id="sum-invest"></strong></div>
+        </div>
+
+        <div class="card">
+          <h3>Kişi bazında</h3>
+          <table class="person-table">
+            <thead><tr><th></th><th>Gelir</th><th>Gider</th><th>Net</th></tr></thead>
+            <tbody id="person-rows"></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>Giderler kategoriye göre</h3>
+          <div id="category-bars" class="bars"></div>
+        </div>
+
+        <div class="card">
+          <h3>Son 12 ay</h3>
+          <div class="legend"><span class="dot income"></span>Gelir <span class="dot expense"></span>Gider <span class="dot net"></span>Kenara kalan</div>
+          <div id="trend" class="trend"></div>
+        </div>
+
+        <div class="card">
+          <h3>Toplam birikim (tüm zamanlar)</h3>
+          <div class="totals">
+            <div><span class="muted">Toplam kenara kalan</span><strong id="all-net"></strong></div>
+            <div><span class="muted">Toplam yatırım</span><strong id="all-invest"></strong></div>
+          </div>
+          <div id="asset-bars" class="bars"></div>
+        </div>
+      </section>
+
+      <!-- HAREKETLER -->
+      <section id="tab-transactions" class="tab hidden">
+        <div class="segmented" id="tx-filter">
+          <button data-filter="all" class="active">Hepsi</button>
+          <button data-filter="me">Benim</button>
+          <button data-filter="partner">Eşimin</button>
+        </div>
+        <ul id="tx-list" class="list"></ul>
+        <p id="tx-empty" class="empty hidden">Bu ay henüz kayıt yok.</p>
+      </section>
+
+      <!-- YATIRIMLAR -->
+      <section id="tab-investments" class="tab hidden">
+        <div class="card stat invest wide"><span>Bu ay yatırıma giden</span><strong id="inv-month-total"></strong></div>
+        <ul id="inv-list" class="list"></ul>
+        <p id="inv-empty" class="empty hidden">Bu ay henüz yatırım kaydı yok.</p>
+      </section>
+
+      <!-- ALIŞVERİŞ -->
+      <section id="tab-shopping" class="tab hidden">
+        <form id="shop-form" class="shop-form">
+          <input name="name" placeholder="Ne alınacak?" required autocomplete="off">
+          <input name="quantity" placeholder="Miktar" class="qty" autocomplete="off">
+          <button class="btn primary" type="submit">Ekle</button>
+        </form>
+        <ul id="shop-list" class="list shop"></ul>
+        <p id="shop-empty" class="empty hidden">Liste boş 🎉</p>
+        <button id="shop-clear" class="btn ghost hidden">Alınanları temizle</button>
+      </section>
+    </main>
+
+    <button id="fab" class="fab" aria-label="Ekle">+</button>
+
+    <nav class="tabbar">
+      <button data-tab="summary" class="active"><span>📊</span>Özet</button>
+      <button data-tab="transactions"><span>💸</span>Hareketler</button>
+      <button data-tab="investments"><span>📈</span>Yatırım</button>
+      <button data-tab="shopping"><span>🛒</span>Alışveriş</button>
+    </nav>
+  </div>
+
+  <!-- Gelir/gider formu -->
+  <dialog id="tx-dialog" class="sheet">
+    <form id="tx-form" method="dialog">
+      <h3 id="tx-title">Yeni kayıt</h3>
+      <div class="segmented kind" id="tx-kind">
+        <button type="button" data-kind="expense" class="active">Gider</button>
+        <button type="button" data-kind="income">Gelir</button>
+      </div>
+      <label>Tutar (₺)
+        <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
+      </label>
+      <label>Kategori
+        <select name="category" id="tx-category"></select>
+      </label>
+      <label>Tarih
+        <input name="date" type="date" required>
+      </label>
+      <label>Not
+        <input name="note" placeholder="İsteğe bağlı" autocomplete="off">
+      </label>
+      <div class="actions">
+        <button type="button" class="btn danger hidden" id="tx-delete">Sil</button>
+        <button type="button" class="btn ghost" data-close>Vazgeç</button>
+        <button type="submit" class="btn primary">Kaydet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Yatırım formu -->
+  <dialog id="inv-dialog" class="sheet">
+    <form id="inv-form" method="dialog">
+      <h3 id="inv-title">Yeni yatırım</h3>
+      <label>Yatırım türü
+        <select name="asset_type" id="inv-type"></select>
+      </label>
+      <label>Tutar (₺)
+        <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
+      </label>
+      <label>Miktar / adet
+        <input name="quantity" type="number" inputmode="decimal" step="any" placeholder="Örn. 5 gram, 100 dolar, 10 lot">
+      </label>
+      <label>Açıklama
+        <input name="description" placeholder="Örn. Çeyrek altın, THYAO, BES" autocomplete="off">
+      </label>
+      <label>Tarih
+        <input name="date" type="date" required>
+      </label>
+      <div class="actions">
+        <button type="button" class="btn danger hidden" id="inv-delete">Sil</button>
+        <button type="button" class="btn ghost" data-close>Vazgeç</button>
+        <button type="submit" class="btn primary">Kaydet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
