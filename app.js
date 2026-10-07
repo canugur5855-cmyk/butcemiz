@@ -23,6 +23,7 @@ const state = {
   profiles: {},          // id -> display_name
   transactions: [],
   investments: [],
+  withdrawals: [],       // yatırımdan çekişler (bozdurma)
   rates: {},             // kod -> { buying, selling, updated_at }
   shopping: [],
   expected: [],
@@ -31,6 +32,8 @@ const state = {
   txFilter: 'all',
   editingTx: null,
   editingInv: null,
+  editingWd: null,
+  wdInv: null,           // çekiş formunun ait olduğu yatırım
   invAmountTouched: false,  // tutar elle girildiyse kurdan otomatik doldurma durur
   editingExp: null,
   receivingExp: null,  // "Geldi" denince açılan gelir formu kaydedilince bu beklenen gelir kapanır
@@ -155,21 +158,23 @@ async function startApp() {
 
 // ---------- veri ----------
 async function loadAll() {
-  const [p, t, i, s, x, r] = await Promise.all([
+  const [p, t, i, s, x, r, w] = await Promise.all([
     sb.from('profiles').select('id, display_name'),
     sb.from('transactions').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
     sb.from('investments').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
     sb.from('shopping_items').select('*').order('checked').order('created_at', { ascending: false }),
     sb.from('expected_incomes').select('*').order('date').order('id'),
     sb.from('rates').select('*'),
+    sb.from('withdrawals').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
   ]);
-  for (const q of [p, t, i, s, x, r]) if (q.error) return fail(q.error);
+  for (const q of [p, t, i, s, x, r, w]) if (q.error) return fail(q.error);
   state.profiles = Object.fromEntries(p.data.map((x) => [x.id, x.display_name]));
   state.transactions = t.data;
   state.investments = i.data;
   state.shopping = s.data;
   state.expected = x.data;
   state.rates = Object.fromEntries(r.data.map((q) => [q.code, q]));
+  state.withdrawals = w.data;
   render();
 }
 
@@ -186,6 +191,7 @@ function subscribe() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'investments' }, scheduleReload)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_items' }, scheduleReload)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'expected_incomes' }, scheduleReload)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'withdrawals' }, scheduleReload)
     .subscribe();
 }
 
@@ -210,9 +216,13 @@ function inMonth(rows, month = state.month) {
   return rows.filter((r) => r.date.startsWith(key));
 }
 
-// Ayın birikimi (gelir − gider) ve o birikime bağlanan yatırımlar.
+// Ayın birikimi (gelir − gider + yatırımdan çekilen) ve o birikime bağlanan yatırımlar.
 function monthSaving(month) {
-  return sum(inMonth(state.transactions, month), (t) => (t.kind === 'income' ? t.amount : -t.amount));
+  return sum(inMonth(state.transactions, month), (t) => (t.kind === 'income' ? t.amount : -t.amount)) + withdrawnIn(month);
+}
+// Yatırımdan çekilen net para, çekildiği ayın kenarda kalanına eklenir (stopaj eklenmez).
+function withdrawnIn(month) {
+  return sum(inMonth(state.withdrawals, month), (w) => w.amount);
 }
 function linkedTo(month, exceptId = null) {
   const key = `${monthKey(month)}-01`;
@@ -223,11 +233,33 @@ function availableIn(month, exceptId = null) {
   return monthSaving(month) - sum(linkedTo(month, exceptId), (x) => x.amount);
 }
 
+// Yatırım satırı bozdurulunca değişmez (bağlandığı ayın birikimi geri açılmasın diye);
+// kalan miktar ve maliyet çekişlerden hesaplanır.
+function withdrawalsOf(x, exceptId = null) {
+  return state.withdrawals.filter((w) => w.investment_id === x.id && w.id !== exceptId);
+}
+function isPriced(x) { return !!x.rate_code && Number(x.quantity) > 0; }
+function qtyLeft(x, exceptId = null) {
+  return Math.max(0, Number(x.quantity) - sum(withdrawalsOf(x, exceptId), (w) => w.quantity ?? 0));
+}
+// Fiyatlıda satılan miktar oranında, diğerlerinde çekilen brüt tutar (net + stopaj) kadar düşer.
+function costLeft(x, exceptId = null) {
+  if (isPriced(x)) return (Number(x.amount) * qtyLeft(x, exceptId)) / Number(x.quantity);
+  return Math.max(0, Number(x.amount) - sum(withdrawalsOf(x, exceptId), (w) => Number(w.amount) + Number(w.tax)));
+}
+function invName(x) {
+  return (UNITS[x.rate_code]?.name ?? x.asset_type) + (x.description ? ` · ${x.description}` : '');
+}
+
 // Bugünkü değer: bozdurulursa alınacak fiyat (alış), yoksa satış. Fiyatı takip edilmeyen yatırımda null.
+function unitPrice(code) {
+  const r = state.rates[code];
+  return r ? Number(r.buying ?? r.selling) : null;
+}
 function valueNow(x) {
-  const r = x.rate_code && state.rates[x.rate_code];
-  if (!r || x.quantity == null) return null;
-  return Number(x.quantity) * Number(r.buying ?? r.selling);
+  const price = x.rate_code && unitPrice(x.rate_code);
+  if (!price || x.quantity == null) return null;
+  return qtyLeft(x) * price;
 }
 
 function renderSummary() {
@@ -237,14 +269,16 @@ function renderSummary() {
   const expense = sum(tx.filter((t) => t.kind === 'expense'), (t) => t.amount);
   const net = income - expense;
   const linked = sum(linkedTo(state.month), (x) => x.amount);
-  const free = net - linked;
+  const back = withdrawnIn(state.month);
+  const free = net + back - linked;
   const invested = sum(inv, (x) => x.amount);
 
   $('#sum-income').textContent = fmt(income);
   $('#sum-expense').textContent = fmt(expense);
   $('#sum-net').textContent = fmt(free);
   $('#sum-net').classList.toggle('negative', free < 0);
-  $('#sum-rate').textContent = linked > 0 ? `${fmt(net)} birikti, ${fmt(linked)} yatırıma bağlandı`
+  const notes = [back > 0 && `${fmt(back)} yatırımdan çekildi`, linked > 0 && `${fmt(linked)} yatırıma bağlandı`].filter(Boolean);
+  $('#sum-rate').textContent = notes.length ? [`${fmt(net)} birikti`, ...notes].join(', ')
     : income > 0 ? `Gelirin %${Math.round((net / income) * 100)}'i` : '';
   $('#sum-invest').textContent = fmt(invested);
 
@@ -269,7 +303,7 @@ function renderSummary() {
     const mt = inMonth(state.transactions, m);
     const inc = sum(mt.filter((t) => t.kind === 'income'), (t) => t.amount);
     const exp = sum(mt.filter((t) => t.kind === 'expense'), (t) => t.amount);
-    return { m, inc, exp, net: inc - exp - sum(linkedTo(m), (x) => x.amount) };
+    return { m, inc, exp, net: inc - exp + withdrawnIn(m) - sum(linkedTo(m), (x) => x.amount) };
   });
   const max = Math.max(1, ...series.flatMap((s) => [s.inc, s.exp, Math.abs(s.net)]));
   $('#trend').innerHTML = series.map((s) => `
@@ -286,14 +320,16 @@ function renderSummary() {
   // tüm zamanlar
   const allInc = sum(state.transactions.filter((t) => t.kind === 'income'), (t) => t.amount);
   const allExp = sum(state.transactions.filter((t) => t.kind === 'expense'), (t) => t.amount);
-  const allInv = sum(state.investments, (x) => x.amount);
+  // yatırımlar bozdurulan kısım düşülerek (kalan maliyetiyle) sayılır
+  const allInv = sum(state.investments, costLeft);
   const allLinked = sum(state.investments.filter((x) => x.funded_month), (x) => x.amount);
-  $('#all-net').textContent = fmt(allInc - allExp - allLinked);
+  const allBack = sum(state.withdrawals, (w) => w.amount);
+  $('#all-net').textContent = fmt(allInc - allExp + allBack - allLinked);
   $('#all-invest').textContent = fmt(allInv);
-  const allNow = sum(state.investments, (x) => valueNow(x) ?? x.amount);
+  const allNow = sum(state.investments, (x) => valueNow(x) ?? costLeft(x));
   $('#all-invest-now').textContent = state.investments.some((x) => valueNow(x) != null) ? `Bugün ${fmt(allNow)}` : '';
   const byAsset = {};
-  for (const x of state.investments) byAsset[x.asset_type] = (byAsset[x.asset_type] || 0) + Number(x.amount);
+  for (const x of state.investments) if (costLeft(x) > 0) byAsset[x.asset_type] = (byAsset[x.asset_type] || 0) + costLeft(x);
   $('#asset-bars').innerHTML = barRows(byAsset, allInv, 'invest');
 }
 
@@ -321,17 +357,29 @@ function renderTransactions() {
   const inc = sum(tx.filter((t) => t.kind === 'income'), (t) => t.amount);
   const exp = sum(tx.filter((t) => t.kind === 'expense'), (t) => t.amount);
   const lnk = sum(linked, (x) => x.amount);
+  const wds = inMonth(state.withdrawals);
+  const back = sum(wds, (w) => w.amount);
+  const free = inc - exp + back - lnk;
   $('#tx-strip').innerHTML = `
     <div><span>Gelir</span><strong class="income">${fmt(inc)}</strong></div>
     <div><span>Gider</span><strong class="expense">${fmt(exp)}</strong></div>
     <div><span>Yatırıma bağlanan</span><strong class="invest">${fmt(lnk)}</strong></div>
-    <div><span>Kenarda kalan</span><strong class="net ${inc - exp - lnk < 0 ? 'negative' : ''}">${fmt(inc - exp - lnk)}</strong></div>`;
+    ${back > 0 ? `<div><span>Yatırımdan çekilen</span><strong class="income">${fmt(back)}</strong></div>` : ''}
+    <div><span>Kenarda kalan</span><strong class="net ${free < 0 ? 'negative' : ''}">${fmt(free)}</strong></div>`;
 
-  // bu ayın birikimine bağlanan yatırımlar da hareket olarak listelenir
-  const rows = filterByOwner([...tx, ...linked.map((x) => ({ ...x, isInv: true }))])
+  // bu ayın birikimine bağlanan yatırımlar ve yatırımdan çekişler de hareket olarak listelenir
+  const invById = Object.fromEntries(state.investments.map((x) => [x.id, x]));
+  const rows = filterByOwner([...tx, ...linked.map((x) => ({ ...x, isInv: true })), ...wds.map((w) => ({ ...w, isWd: true }))])
     .sort((a, b) => b.date.localeCompare(a.date));
   $('#tx-empty').classList.toggle('hidden', rows.length > 0);
-  $('#tx-list').innerHTML = rows.map((t) => t.isInv ? `
+  $('#tx-list').innerHTML = rows.map((t) => t.isWd ? `
+    <li class="item ${isMe(t.user_id) ? 'editable' : ''}" data-id="${t.id}" data-wd>
+      <div class="item-main">
+        <div class="item-title">↩ ${esc(invName(invById[t.investment_id]))} bozuldu${t.note ? ` <span class="muted">· ${esc(t.note)}</span>` : ''}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(t.date))}${Number(t.tax) > 0 ? ` · stopaj ${fmt(t.tax)}` : ''} ${ownerBadge(t.user_id)}</div>
+      </div>
+      <div class="amount income">+${fmt(t.amount)}</div>
+    </li>` : t.isInv ? `
     <li class="item ${isMe(t.user_id) ? 'editable' : ''}" data-id="${t.id}" data-inv>
       <div class="item-main">
         <div class="item-title">📈 ${esc(t.asset_type)}${t.description ? ` <span class="muted">· ${esc(t.description)}</span>` : ''}</div>
@@ -353,16 +401,17 @@ function gainHtml(gain) {
 }
 
 function renderPortfolio() {
-  const priced = state.investments.filter((x) => valueNow(x) != null);
+  // tamamen bozdurulanlar portföyde görünmez
+  const priced = state.investments.filter((x) => valueNow(x) != null && qtyLeft(x) > 0);
   const byCode = {};
   for (const x of priced) {
     const g = (byCode[x.rate_code] ??= { qty: 0, cost: 0, value: 0 });
-    g.qty += Number(x.quantity);
-    g.cost += Number(x.amount);
+    g.qty += qtyLeft(x);
+    g.cost += costLeft(x);
     g.value += valueNow(x);
   }
   const value = sum(priced, valueNow);
-  const cost = sum(priced, (x) => x.amount);
+  const cost = sum(priced, costLeft);
   $('#pf-value').textContent = fmt(value);
   $('#pf-gain').innerHTML = priced.length ? gainHtml(value - cost) : fmt(0);
   $('#pf-rows').innerHTML = Object.entries(byCode).sort((a, b) => b[1].value - a[1].value).map(([code, g]) => `
@@ -372,13 +421,20 @@ function renderPortfolio() {
       <div class="pf-val">${fmt(g.value)}<small>${gainHtml(g.value - g.cost)}</small></div>
     </div>`).join('');
 
-  const untracked = state.investments.filter((x) => valueNow(x) == null);
+  const untracked = state.investments.filter((x) => valueNow(x) == null && costLeft(x) > 0);
   const stamps = Object.values(state.rates).map((q) => q.updated_at).sort();
   $('#pf-note').innerHTML = [
     priced.length ? '' : 'Altın ve döviz yatırımlarına birim ve miktar girince bugünkü değerleri burada görünür.',
-    untracked.length ? `Fiyatı takip edilmeyen ${untracked.length} yatırım (maliyetiyle ${fmt(sum(untracked, (x) => x.amount))}) bu hesaba dahil değil.` : '',
+    untracked.length ? `Fiyatı takip edilmeyen ${untracked.length} yatırım (kalan maliyetiyle ${fmt(sum(untracked, costLeft))}) bu hesaba dahil değil.` : '',
     stamps.length ? `Kurlar ${stampFmt.format(new Date(stamps.at(-1)))} itibarıyla, her gün 10:00 ve 17:00'de güncellenir.` : '',
   ].filter(Boolean).join('<br>');
+}
+
+// Bozdurulmuş yatırımda kalan kısım: fiyatlıda miktar, diğerlerinde maliyet.
+function leftText(x) {
+  if (!withdrawalsOf(x).length) return '';
+  if (costLeft(x) <= 0) return ' · <span class="late">tamamı bozuldu</span>';
+  return isPriced(x) ? ` · kalan ${qtyFmt(qtyLeft(x))} ${esc(UNITS[x.rate_code]?.unit ?? '')}` : ` · kalan ${fmt(costLeft(x))}`;
 }
 
 function renderInvestments() {
@@ -390,7 +446,7 @@ function renderInvestments() {
     <li class="item ${isMe(x.user_id) ? 'editable' : ''}" data-id="${x.id}">
       <div class="item-main">
         <div class="item-title">${esc(UNITS[x.rate_code]?.name ?? x.asset_type)}${x.description ? ` <span class="muted">· ${esc(x.description)}</span>` : ''}</div>
-        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${qtyFmt(x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${valueNow(x) != null ? ` · bugün ${fmt(valueNow(x))} ${gainHtml(valueNow(x) - x.amount)}` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''} ${ownerBadge(x.user_id)}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${qtyFmt(x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${valueNow(x) != null ? ` · bugün ${fmt(valueNow(x))} ${gainHtml(valueNow(x) - x.amount)}` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''}${leftText(x)} ${ownerBadge(x.user_id)}</div>
       </div>
       <div class="amount invest">${fmt(x.amount)}</div>
     </li>`).join('');
@@ -515,7 +571,10 @@ $('#tx-list').addEventListener('click', (e) => {
   if (!li) return;
   const id = Number(li.dataset.id);
   if ('inv' in li.dataset) openInvDialog(state.investments.find((x) => x.id === id));
-  else openTxDialog(state.transactions.find((t) => t.id === id));
+  else if ('wd' in li.dataset) {
+    const w = state.withdrawals.find((x) => x.id === id);
+    openWdDialog(state.investments.find((x) => x.id === w.investment_id), w);
+  } else openTxDialog(state.transactions.find((t) => t.id === id));
 });
 
 $('#tx-form').addEventListener('submit', async (e) => {
@@ -614,7 +673,6 @@ function openInvDialog(inv) {
   const f = $('#inv-form');
   f.reset();
   $('#inv-title').textContent = inv ? 'Yatırımı düzenle' : 'Yeni yatırım';
-  $('#inv-delete').classList.toggle('hidden', !inv);
   f.asset_type.value = inv?.asset_type ?? ASSET_TYPES[0];
   f.amount.value = inv?.amount ?? '';
   f.quantity.value = inv?.quantity ?? '';
@@ -627,8 +685,21 @@ function openInvDialog(inv) {
   // yeni yatırım varsayılan olarak seçili ayın birikimine bağlanır
   f.funded_month.value = inv ? (inv.funded_month ?? '') : `${monthKey(state.month)}-01`;
   updateFundHint();
+  // Bozdurulmuş yatırımın tutarı/miktarı/bağlı olduğu ay değişirse geçmiş aylar ve kalan hesabı bozulur.
+  const locked = !!inv && withdrawalsOf(inv).length > 0;
+  for (const name of ['asset_type', 'rate_code', 'quantity', 'amount', 'funded_month']) f[name].disabled = locked;
+  $('#inv-lock').textContent = locked ? `Bu yatırımdan çekiş yapıldı; tutarı ve bağlı olduğu ay değiştirilemez. Kalan: ${
+    isPriced(inv) ? `${qtyFmt(qtyLeft(inv))} ${UNITS[inv.rate_code]?.unit ?? ''}` : fmt(costLeft(inv))}` : '';
+  $('#inv-delete').classList.toggle('hidden', !inv || locked);
+  $('#inv-withdraw').classList.toggle('hidden', !inv || costLeft(inv) <= 0);
   $('#inv-dialog').showModal();
 }
+
+$('#inv-withdraw').addEventListener('click', () => {
+  const inv = state.editingInv;
+  $('#inv-dialog').close();
+  openWdDialog(inv, null);
+});
 
 $('#inv-list').addEventListener('click', (e) => {
   const li = e.target.closest('li.editable');
@@ -662,6 +733,73 @@ $('#inv-delete').addEventListener('click', async () => {
   const { error } = await sb.from('investments').delete().eq('id', state.editingInv.id);
   if (error) return fail(error);
   $('#inv-dialog').close();
+  toast('Silindi');
+  loadAll();
+});
+
+// ---------- yatırımdan çekiş (bozdurma) ----------
+// Ele geçen net para çekiş ayının kenarda kalanına eklenir; stopaj sadece yatırımdan düşer.
+function openWdDialog(inv, w) {
+  state.wdInv = inv;
+  state.editingWd = w;
+  const f = $('#wd-form');
+  f.reset();
+  $('#wd-title').textContent = w ? 'Çekişi düzenle' : 'Yatırımı boz / çek';
+  const priced = isPriced(inv);
+  const unit = UNITS[inv.rate_code]?.unit ?? '';
+  $('#wd-info').textContent = `${invName(inv)} — kalan ${priced ? `${qtyFmt(qtyLeft(inv, w?.id))} ${unit}, ` : ''}maliyet ${fmt(costLeft(inv, w?.id))}`;
+  $('#wd-qty-row').classList.toggle('hidden', !priced);
+  $('#wd-qty-label').textContent = `Satılan miktar (${unit})`;
+  f.quantity.required = priced;
+  f.quantity.value = w?.quantity ?? '';
+  f.amount.value = w?.amount ?? '';
+  f.tax.value = w && Number(w.tax) > 0 ? w.tax : '';
+  f.date.value = w?.date ?? todayISO();
+  f.note.value = w?.note ?? '';
+  $('#wd-delete').classList.toggle('hidden', !w);
+  updateWdHint();
+  $('#wd-dialog').showModal();
+}
+
+function updateWdHint() {
+  const f = $('#wd-form');
+  const inv = state.wdInv;
+  if (!inv) return;
+  const over = isPriced(inv) ? Number(f.quantity.value || 0) > qtyLeft(inv, state.editingWd?.id)
+    : Number(f.amount.value || 0) + Number(f.tax.value || 0) > costLeft(inv, state.editingWd?.id);
+  const month = f.date.value ? monthFmt.format(parseDate(f.date.value)) : 'O ayın';
+  $('#wd-hint').textContent = over ? 'Kalandan fazla çekiliyor; kalan sıfırlanır.'
+    : `Net tutar ${month} kenarda kalanına eklenir. Bu parayla ödediğin gideri ayrıca girebilirsin.`;
+}
+
+$('#wd-form').addEventListener('input', updateWdHint);
+
+$('#wd-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const row = {
+    investment_id: state.wdInv.id,
+    amount: Number(f.amount.value),
+    tax: Number(f.tax.value || 0),
+    quantity: isPriced(state.wdInv) ? Number(f.quantity.value) : null,
+    date: f.date.value,
+    note: f.note.value.trim() || null,
+  };
+  const q = state.editingWd
+    ? sb.from('withdrawals').update(row).eq('id', state.editingWd.id)
+    : sb.from('withdrawals').insert(row);
+  const { error } = await q;
+  if (error) return fail(error);
+  $('#wd-dialog').close();
+  toast('Kaydedildi');
+  loadAll();
+});
+
+$('#wd-delete').addEventListener('click', async () => {
+  if (!state.editingWd) return;
+  const { error } = await sb.from('withdrawals').delete().eq('id', state.editingWd.id);
+  if (error) return fail(error);
+  $('#wd-dialog').close();
   toast('Silindi');
   loadAll();
 });

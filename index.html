@@ -208,8 +208,39 @@
         <input name="date" type="date" required>
       </label>
       <p id="inv-error" class="warn"></p>
+      <p id="inv-lock" class="hint"></p>
+      <button type="button" class="btn ghost wide hidden" id="inv-withdraw">↩ Boz / çek</button>
       <div class="actions">
         <button type="button" class="btn danger hidden" id="inv-delete">Sil</button>
+        <button type="button" class="btn ghost" data-close>Vazgeç</button>
+        <button type="submit" class="btn primary">Kaydet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Yatırımdan çekiş (bozdurma) formu -->
+  <dialog id="wd-dialog" class="sheet">
+    <form id="wd-form" method="dialog">
+      <h3 id="wd-title">Yatırımı boz</h3>
+      <p id="wd-info" class="hint"></p>
+      <label id="wd-qty-row"><span id="wd-qty-label">Satılan miktar</span>
+        <input name="quantity" type="number" inputmode="decimal" step="any" min="0">
+      </label>
+      <label>Eline geçen net tutar (₺)
+        <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
+      </label>
+      <label>Stopaj / kesinti (₺)
+        <input name="tax" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0">
+      </label>
+      <label>Tarih
+        <input name="date" type="date" required>
+      </label>
+      <label>Not
+        <input name="note" placeholder="İsteğe bağlı" autocomplete="off">
+      </label>
+      <p id="wd-hint" class="hint"></p>
+      <div class="actions">
+        <button type="button" class="btn danger hidden" id="wd-delete">Sil</button>
         <button type="button" class="btn ghost" data-close>Vazgeç</button>
         <button type="submit" class="btn primary">Kaydet</button>
       </div>

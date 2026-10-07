@@ -90,6 +90,27 @@ create index investments_date_idx on public.investments (date);
 create index investments_user_id_idx on public.investments (user_id);
 
 -- ---------------------------------------------------------------
+-- Yatırımdan çekişler (bozdurma). Yatırım satırı değişmez; böylece bağlandığı ayın
+-- birikimi geri açılmaz. Kalan miktar/maliyet çekişlerden hesaplanır.
+-- amount: ele geçen net para, çekiş tarihinin ayındaki kenarda kalana eklenir.
+-- tax: stopaj/kesinti, sadece yatırımdan düşer. quantity: fiyatı takip edilen yatırımda satılan miktar.
+-- ---------------------------------------------------------------
+create table public.withdrawals (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  investment_id bigint not null references public.investments (id) on delete restrict,
+  amount numeric(14, 2) not null check (amount > 0),
+  tax numeric(14, 2) not null default 0 check (tax >= 0),
+  quantity numeric(18, 6) check (quantity is null or quantity > 0),
+  date date not null default current_date,
+  note text,
+  created_at timestamptz not null default now()
+);
+create index withdrawals_investment_id_idx on public.withdrawals (investment_id);
+create index withdrawals_user_id_idx on public.withdrawals (user_id);
+create index withdrawals_date_idx on public.withdrawals (date);
+
+-- ---------------------------------------------------------------
 -- Beklenen (potansiyel) gelirler. Taksitli ödemede her taksit ayrı satırdır,
 -- aynı plan_id ile bağlanır (installment_no / installment_count: 2/5 gibi).
 -- ---------------------------------------------------------------
@@ -176,6 +197,18 @@ create policy "expected_update_own" on public.expected_incomes
 create policy "expected_delete_own" on public.expected_incomes
   for delete to authenticated using (user_id = (select auth.uid()));
 
+-- Yatırımdan çekişler: aynı kurallar.
+alter table public.withdrawals enable row level security;
+create policy "withdrawals_select" on public.withdrawals
+  for select to authenticated using ((select private.is_member()));
+create policy "withdrawals_insert_own" on public.withdrawals
+  for insert to authenticated with check (user_id = (select auth.uid()));
+create policy "withdrawals_update_own" on public.withdrawals
+  for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+create policy "withdrawals_delete_own" on public.withdrawals
+  for delete to authenticated using (user_id = (select auth.uid()));
+
 -- Alışveriş listesi: ortak, iki üye de her şeyi yapabilir.
 create policy "shopping_select" on public.shopping_items
   for select to authenticated using ((select private.is_member()));
@@ -190,7 +223,7 @@ create policy "shopping_delete" on public.shopping_items
 -- Canlı senkron (bir telefonda eklenen diğerinde anında görünsün)
 -- ---------------------------------------------------------------
 alter publication supabase_realtime add table public.transactions, public.investments, public.shopping_items,
-  public.expected_incomes;
+  public.expected_incomes, public.withdrawals;
 
 -- ---------------------------------------------------------------
 -- Günlük kurlar: döviz ve altın fiyatları her gün 10:00 ve 17:00'de
