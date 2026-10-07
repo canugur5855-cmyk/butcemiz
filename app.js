@@ -6,13 +6,24 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const EXPENSE_CATEGORIES = ['Market', 'Kira', 'Faturalar', 'Ulaşım', 'Yemek / Kafe', 'Sağlık', 'Giyim', 'Eğitim',
   'Eğlence', 'Ev eşyası', 'Kredi / Taksit', 'Sigorta', 'Hediye', 'Bakım / Kişisel', 'Diğer'];
 const INCOME_CATEGORIES = ['Maaş', 'Prim / İkramiye', 'Ek iş', 'Kira geliri', 'Yatırım getirisi', 'Diğer'];
-const ASSET_TYPES = ['Altın', 'Döviz', 'Hisse senedi', 'Yatırım fonu', 'Mevduat / Vadeli', 'Kripto', 'BES', 'Gayrimenkul', 'Diğer'];
+const ASSET_TYPES = ['Altın', 'Döviz', 'Gümüş', 'Hisse senedi', 'Yatırım fonu', 'Mevduat / Vadeli', 'Kripto', 'BES', 'Gayrimenkul', 'Diğer'];
+// Fiyatı her gün güncellenen birimler (kodlar public.rates tablosundaki kodlar).
+const PRICED_UNITS = {
+  'Altın': [['GRA', 'Gram altın', 'gr'], ['CEYREKALTIN', 'Çeyrek altın', 'adet'], ['YARIMALTIN', 'Yarım altın', 'adet'],
+    ['TAMALTIN', 'Tam altın', 'adet'], ['CUMHURIYETALTINI', 'Cumhuriyet altını', 'adet'], ['ATAALTIN', 'Ata altın', 'adet'],
+    ['YIA', '22 ayar bilezik', 'gr'], ['18AYARALTIN', '18 ayar altın', 'gr'], ['14AYARALTIN', '14 ayar altın', 'gr'],
+    ['HAS', 'Has altın', 'gr']],
+  'Döviz': [['USD', 'Dolar', '$'], ['EUR', 'Euro', '€'], ['GBP', 'Sterlin', '£'], ['CHF', 'İsviçre frangı', 'CHF']],
+  'Gümüş': [['GUMUS', 'Gram gümüş', 'gr']],
+};
+const UNITS = Object.fromEntries(Object.values(PRICED_UNITS).flat().map(([code, name, unit]) => [code, { name, unit }]));
 
 const state = {
   user: null,
   profiles: {},          // id -> display_name
   transactions: [],
   investments: [],
+  rates: {},             // kod -> { buying, selling, updated_at }
   shopping: [],
   expected: [],
   month: startOfMonth(new Date()),
@@ -20,6 +31,7 @@ const state = {
   txFilter: 'all',
   editingTx: null,
   editingInv: null,
+  invAmountTouched: false,  // tutar elle girildiyse kurdan otomatik doldurma durur
   editingExp: null,
   receivingExp: null,  // "Geldi" denince açılan gelir formu kaydedilince bu beklenen gelir kapanır
   expMode: 'single',
@@ -36,6 +48,8 @@ const monthFmt = new Intl.DateTimeFormat('tr-TR', { month: 'long', year: 'numeri
 const shortMonthFmt = new Intl.DateTimeFormat('tr-TR', { month: 'short' });
 const dayFmt = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short' });
 const fullDayFmt = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' });
+const stampFmt = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const qtyFmt = (n) => Number(n).toLocaleString('tr-TR', { maximumFractionDigits: 4 });
 
 function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
@@ -141,19 +155,21 @@ async function startApp() {
 
 // ---------- veri ----------
 async function loadAll() {
-  const [p, t, i, s, x] = await Promise.all([
+  const [p, t, i, s, x, r] = await Promise.all([
     sb.from('profiles').select('id, display_name'),
     sb.from('transactions').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
     sb.from('investments').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
     sb.from('shopping_items').select('*').order('checked').order('created_at', { ascending: false }),
     sb.from('expected_incomes').select('*').order('date').order('id'),
+    sb.from('rates').select('*'),
   ]);
-  for (const r of [p, t, i, s, x]) if (r.error) return fail(r.error);
+  for (const q of [p, t, i, s, x, r]) if (q.error) return fail(q.error);
   state.profiles = Object.fromEntries(p.data.map((x) => [x.id, x.display_name]));
   state.transactions = t.data;
   state.investments = i.data;
   state.shopping = s.data;
   state.expected = x.data;
+  state.rates = Object.fromEntries(r.data.map((q) => [q.code, q]));
   render();
 }
 
@@ -205,6 +221,13 @@ function linkedTo(month, exceptId = null) {
 // Kenarda kalan = birikim − bağlanan yatırımlar
 function availableIn(month, exceptId = null) {
   return monthSaving(month) - sum(linkedTo(month, exceptId), (x) => x.amount);
+}
+
+// Bugünkü değer: bozdurulursa alınacak fiyat (alış), yoksa satış. Fiyatı takip edilmeyen yatırımda null.
+function valueNow(x) {
+  const r = x.rate_code && state.rates[x.rate_code];
+  if (!r || x.quantity == null) return null;
+  return Number(x.quantity) * Number(r.buying ?? r.selling);
 }
 
 function renderSummary() {
@@ -267,6 +290,8 @@ function renderSummary() {
   const allLinked = sum(state.investments.filter((x) => x.funded_month), (x) => x.amount);
   $('#all-net').textContent = fmt(allInc - allExp - allLinked);
   $('#all-invest').textContent = fmt(allInv);
+  const allNow = sum(state.investments, (x) => valueNow(x) ?? x.amount);
+  $('#all-invest-now').textContent = state.investments.some((x) => valueNow(x) != null) ? `Bugün ${fmt(allNow)}` : '';
   const byAsset = {};
   for (const x of state.investments) byAsset[x.asset_type] = (byAsset[x.asset_type] || 0) + Number(x.amount);
   $('#asset-bars').innerHTML = barRows(byAsset, allInv, 'invest');
@@ -323,15 +348,49 @@ function renderTransactions() {
     </li>`).join('');
 }
 
+function gainHtml(gain) {
+  return `<span class="${gain < 0 ? 'loss' : 'gain'}">${gain < 0 ? '▼' : '▲'}${fmt(Math.abs(gain))}</span>`;
+}
+
+function renderPortfolio() {
+  const priced = state.investments.filter((x) => valueNow(x) != null);
+  const byCode = {};
+  for (const x of priced) {
+    const g = (byCode[x.rate_code] ??= { qty: 0, cost: 0, value: 0 });
+    g.qty += Number(x.quantity);
+    g.cost += Number(x.amount);
+    g.value += valueNow(x);
+  }
+  const value = sum(priced, valueNow);
+  const cost = sum(priced, (x) => x.amount);
+  $('#pf-value').textContent = fmt(value);
+  $('#pf-gain').innerHTML = priced.length ? gainHtml(value - cost) : fmt(0);
+  $('#pf-rows').innerHTML = Object.entries(byCode).sort((a, b) => b[1].value - a[1].value).map(([code, g]) => `
+    <div class="pf-row">
+      <div><strong>${esc(UNITS[code]?.name ?? code)}</strong>
+        <small class="muted">${qtyFmt(g.qty)} ${esc(UNITS[code]?.unit ?? '')} · 1 ${esc(UNITS[code]?.unit ?? '')} = ${fmt(state.rates[code].buying ?? state.rates[code].selling)}</small></div>
+      <div class="pf-val">${fmt(g.value)}<small>${gainHtml(g.value - g.cost)}</small></div>
+    </div>`).join('');
+
+  const untracked = state.investments.filter((x) => valueNow(x) == null);
+  const stamps = Object.values(state.rates).map((q) => q.updated_at).sort();
+  $('#pf-note').innerHTML = [
+    priced.length ? '' : 'Altın ve döviz yatırımlarına birim ve miktar girince bugünkü değerleri burada görünür.',
+    untracked.length ? `Fiyatı takip edilmeyen ${untracked.length} yatırım (maliyetiyle ${fmt(sum(untracked, (x) => x.amount))}) bu hesaba dahil değil.` : '',
+    stamps.length ? `Kurlar ${stampFmt.format(new Date(stamps.at(-1)))} itibarıyla, her gün 10:00 ve 17:00'de güncellenir.` : '',
+  ].filter(Boolean).join('<br>');
+}
+
 function renderInvestments() {
+  renderPortfolio();
   const rows = inMonth(state.investments);
   $('#inv-month-total').textContent = fmt(sum(rows, (x) => x.amount));
   $('#inv-empty').classList.toggle('hidden', rows.length > 0);
   $('#inv-list').innerHTML = rows.map((x) => `
     <li class="item ${isMe(x.user_id) ? 'editable' : ''}" data-id="${x.id}">
       <div class="item-main">
-        <div class="item-title">${esc(x.asset_type)}${x.description ? ` <span class="muted">· ${esc(x.description)}</span>` : ''}</div>
-        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${Number(x.quantity).toLocaleString('tr-TR')} adet/birim` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''} ${ownerBadge(x.user_id)}</div>
+        <div class="item-title">${esc(UNITS[x.rate_code]?.name ?? x.asset_type)}${x.description ? ` <span class="muted">· ${esc(x.description)}</span>` : ''}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${qtyFmt(x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${valueNow(x) != null ? ` · bugün ${fmt(valueNow(x))} ${gainHtml(valueNow(x) - x.amount)}` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''} ${ownerBadge(x.user_id)}</div>
       </div>
       <div class="amount invest">${fmt(x.amount)}</div>
     </li>`).join('');
@@ -495,18 +554,60 @@ $('#tx-delete').addEventListener('click', async () => {
 // ---------- yatırım formu ----------
 $('#inv-type').innerHTML = ASSET_TYPES.map((c) => `<option>${esc(c)}</option>`).join('');
 
-// Kenarda parası olan aylar, yeniden eskiye. Düzenlenen yatırımın bağlı olduğu ay her zaman listelenir.
+// Türün fiyatı takip edilen birimleri varsa birim seçimi görünür; "Diğer" seçilirse takip yapılmaz.
+function setInvUnits(type, code) {
+  const units = PRICED_UNITS[type] ?? [];
+  $('#inv-unit-row').classList.toggle('hidden', !units.length);
+  $('#inv-unit').innerHTML = units.map(([c, name]) => `<option value="${c}">${esc(name)}</option>`).join('')
+    + (units.length ? '<option value="">Diğer (fiyat takibi yok)</option>' : '');
+  $('#inv-unit').value = code ?? units[0]?.[0] ?? '';
+  updateInvRate();
+}
+
+function updateInvRate() {
+  const f = $('#inv-form');
+  const code = f.rate_code.value;
+  const r = state.rates[code];
+  const unit = UNITS[code]?.unit;
+  $('#inv-qty-label').textContent = unit ? `Miktar (${unit})` : 'Miktar / adet';
+  f.quantity.required = !!code;
+  $('#inv-amount-label').textContent = code ? 'Ödenen tutar (₺)' : 'Tutar (₺)';
+  if (!r) { $('#inv-rate-hint').textContent = ''; return; }
+  $('#inv-rate-hint').textContent = `Satış: 1 ${unit} = ${fmt(r.selling)} · ${stampFmt.format(new Date(r.updated_at))}`;
+  if (!state.invAmountTouched && Number(f.quantity.value) > 0) {
+    f.amount.value = (Math.round(Number(f.quantity.value) * Number(r.selling) * 100) / 100).toFixed(2);
+  }
+}
+
+$('#inv-type').addEventListener('change', (e) => setInvUnits(e.target.value));
+$('#inv-unit').addEventListener('change', updateInvRate);
+$('#inv-form').quantity.addEventListener('input', updateInvRate);
+$('#inv-form').amount.addEventListener('input', () => { state.invAmountTouched = true; });
+
+// Hareketi olan aylar + seçili ay, yeniden eskiye. Kenarda para olmasa da bağlanabilir (eksiye düşer).
 function fundingOptions(inv) {
-  const keys = [...new Set(state.transactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
+  const keys = [...new Set([...state.transactions.map((t) => t.date.slice(0, 7)), monthKey(state.month),
+    ...(inv?.funded_month ? [inv.funded_month.slice(0, 7)] : [])])].sort().reverse();
   const opts = ['<option value="">Bağlama — dış kaynak / eski birikim</option>'];
   for (const k of keys) {
     const value = `${k}-01`;
     const free = availableIn(parseDate(value), inv?.id);
-    if (free <= 0 && inv?.funded_month !== value) continue;
     opts.push(`<option value="${value}">${monthFmt.format(parseDate(value))} — kenarda ${fmt(free)}</option>`);
   }
   return opts.join('');
 }
+
+// Yatırım bağlandığı ayın kenarda kalanını aşıyorsa uyarır; kaydı engellemez.
+function updateFundHint() {
+  const f = $('#inv-form');
+  const month = f.funded_month.value;
+  const left = month ? availableIn(parseDate(month), state.editingInv?.id) - Number(f.amount.value || 0) : 0;
+  $('#inv-error').textContent = month && left < 0
+    ? `Bu yatırımla ${monthFmt.format(parseDate(month))} kenarda kalanı ${fmt(left)} olacak.` : '';
+}
+
+$('#inv-funded').addEventListener('change', updateFundHint);
+$('#inv-form').addEventListener('input', updateFundHint);
 
 function openInvDialog(inv) {
   state.editingInv = inv;
@@ -517,13 +618,15 @@ function openInvDialog(inv) {
   f.asset_type.value = inv?.asset_type ?? ASSET_TYPES[0];
   f.amount.value = inv?.amount ?? '';
   f.quantity.value = inv?.quantity ?? '';
+  // mevcut yatırımın tutarı alış maliyetidir, kurla üzerine yazılmaz
+  state.invAmountTouched = !!inv;
+  setInvUnits(f.asset_type.value, inv ? (inv.rate_code ?? '') : undefined);
   f.description.value = inv?.description ?? '';
   f.date.value = inv?.date ?? defaultDate();
   $('#inv-funded').innerHTML = fundingOptions(inv);
-  // yeni yatırım varsayılan olarak seçili ayın birikimine bağlanır (kenarda para varsa)
-  f.funded_month.value = inv ? (inv.funded_month ?? '')
-    : availableIn(state.month) > 0 ? `${monthKey(state.month)}-01` : '';
-  $('#inv-error').textContent = '';
+  // yeni yatırım varsayılan olarak seçili ayın birikimine bağlanır
+  f.funded_month.value = inv ? (inv.funded_month ?? '') : `${monthKey(state.month)}-01`;
+  updateFundHint();
   $('#inv-dialog').showModal();
 }
 
@@ -539,18 +642,11 @@ $('#inv-form').addEventListener('submit', async (e) => {
     asset_type: f.asset_type.value,
     amount: Number(f.amount.value),
     quantity: f.quantity.value ? Number(f.quantity.value) : null,
+    rate_code: PRICED_UNITS[f.asset_type.value] ? f.rate_code.value || null : null,
     description: f.description.value.trim() || null,
     date: f.date.value,
     funded_month: f.funded_month.value || null,
   };
-  if (row.funded_month) {
-    const free = availableIn(parseDate(row.funded_month), state.editingInv?.id);
-    if (row.amount > free + 0.005) {
-      $('#inv-error').textContent = `${monthFmt.format(parseDate(row.funded_month))} için kenarda ${fmt(free)} var. `
-        + 'Fazlası başka aydan geldiyse yatırımı ikiye bölüp her parçayı ayrı aya bağlayın.';
-      return;
-    }
-  }
   const q = state.editingInv
     ? sb.from('investments').update(row).eq('id', state.editingInv.id)
     : sb.from('investments').insert(row);

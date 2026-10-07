@@ -46,6 +46,7 @@ body {
 .muted { color: var(--muted); }
 .negative { color: var(--expense) !important; }
 .error { color: var(--expense); font-size: 14px; min-height: 1em; }
+.warn { color: var(--invest); font-size: 14px; min-height: 1em; }
 .empty { color: var(--muted); text-align: center; padding: 24px 0; }
 
 /* ---------- giriş ---------- */
@@ -174,6 +175,16 @@ main { padding: 4px 12px calc(96px + var(--safe-bottom)); max-width: 640px; marg
 .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; color: #fff; }
 .badge.me { background: var(--me); }
 .badge.partner { background: var(--partner); }
+
+/* ---------- portföy ---------- */
+.pf-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+.pf-row small { display: block; font-size: 12px; margin-top: 2px; }
+.pf-val { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pf-note { font-size: 12px; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
+.gain { color: var(--income); }
+.loss { color: var(--expense); }
+.totals small { display: block; font-size: 12px; margin-top: 2px; }
+.item-sub { flex-wrap: wrap; }
 
 /* ---------- hareketler ay özeti ---------- */
 .month-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; padding: 12px 14px; }

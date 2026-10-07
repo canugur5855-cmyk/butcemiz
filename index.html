@@ -81,7 +81,7 @@
           <h3>Toplam birikim (tüm zamanlar)</h3>
           <div class="totals">
             <div><span class="muted">Toplam kenara kalan</span><strong id="all-net"></strong></div>
-            <div><span class="muted">Toplam yatırım</span><strong id="all-invest"></strong></div>
+            <div><span class="muted">Toplam yatırım</span><strong id="all-invest"></strong><small id="all-invest-now" class="muted"></small></div>
           </div>
           <div id="asset-bars" class="bars"></div>
         </div>
@@ -101,6 +101,15 @@
 
       <!-- YATIRIMLAR -->
       <section id="tab-investments" class="tab hidden">
+        <div class="card">
+          <h3>Portföy — bugünkü değer</h3>
+          <div class="totals">
+            <div><span class="muted">Bugünkü değer</span><strong id="pf-value"></strong></div>
+            <div><span class="muted">Kâr / zarar</span><strong id="pf-gain"></strong></div>
+          </div>
+          <div id="pf-rows"></div>
+          <p id="pf-note" class="pf-note"></p>
+        </div>
         <div class="card stat invest wide"><span>Bu ay yatırıma giden</span><strong id="inv-month-total"></strong></div>
         <ul id="inv-list" class="list"></ul>
         <p id="inv-empty" class="empty hidden">Bu ay henüz yatırım kaydı yok.</p>
@@ -179,14 +188,18 @@
       <label>Yatırım türü
         <select name="asset_type" id="inv-type"></select>
       </label>
-      <label>Tutar (₺)
+      <label id="inv-unit-row">Birim
+        <select name="rate_code" id="inv-unit"></select>
+      </label>
+      <label><span id="inv-qty-label">Miktar / adet</span>
+        <input name="quantity" type="number" inputmode="decimal" step="any" min="0" placeholder="Örn. 5 gram, 100 dolar, 10 lot">
+      </label>
+      <p id="inv-rate-hint" class="hint"></p>
+      <label><span id="inv-amount-label">Tutar (₺)</span>
         <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
       </label>
       <label>Hangi paradan yapıldı?
         <select name="funded_month" id="inv-funded"></select>
-      </label>
-      <label>Miktar / adet
-        <input name="quantity" type="number" inputmode="decimal" step="any" placeholder="Örn. 5 gram, 100 dolar, 10 lot">
       </label>
       <label>Açıklama
         <input name="description" placeholder="Örn. Çeyrek altın, THYAO, BES" autocomplete="off">
@@ -194,7 +207,7 @@
       <label>Tarih
         <input name="date" type="date" required>
       </label>
-      <p id="inv-error" class="error"></p>
+      <p id="inv-error" class="warn"></p>
       <div class="actions">
         <button type="button" class="btn danger hidden" id="inv-delete">Sil</button>
         <button type="button" class="btn ghost" data-close>Vazgeç</button>

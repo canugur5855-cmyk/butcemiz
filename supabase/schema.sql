@@ -191,3 +191,85 @@ create policy "shopping_delete" on public.shopping_items
 -- ---------------------------------------------------------------
 alter publication supabase_realtime add table public.transactions, public.investments, public.shopping_items,
   public.expected_incomes;
+
+-- ---------------------------------------------------------------
+-- Günlük kurlar: döviz ve altın fiyatları her gün 10:00 ve 17:00'de
+-- (İstanbul) finans.truncgil.com'dan çekilir. O kaynak çalışmazsa döviz ve
+-- gram altın için currency-api yedeği kullanılır. Uygulama sadece okur.
+-- Yatırımın rate_code'u bu tablodaki koda bağlanır; bugünkü değer = miktar × alış.
+-- ---------------------------------------------------------------
+create extension if not exists http with schema extensions;
+create extension if not exists pg_cron;
+
+create table public.rates (
+  code text primary key,
+  buying numeric(18, 4),
+  selling numeric(18, 4) not null check (selling > 0),
+  source text not null,
+  updated_at timestamptz not null default now()
+);
+alter table public.rates enable row level security;
+create policy "rates_select" on public.rates
+  for select to authenticated using ((select private.is_member()));
+
+alter table public.investments add column rate_code text;
+
+create or replace function private.update_rates()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  codes text[] := array['USD', 'EUR', 'GBP', 'CHF', 'GRA', 'HAS', 'CEYREKALTIN', 'YARIMALTIN', 'TAMALTIN',
+    'CUMHURIYETALTINI', 'ATAALTIN', 'YIA', '18AYARALTIN', '14AYARALTIN', 'GUMUS'];
+  res extensions.http_response;
+  d jsonb;
+  k text;
+  n int := 0;
+begin
+  perform extensions.http_set_curlopt('CURLOPT_TIMEOUT', '20');
+
+  begin
+    res := extensions.http_get('https://finans.truncgil.com/v4/today.json');
+    if res.status = 200 then
+      d := res.content::jsonb;
+      foreach k in array codes loop
+        if coalesce((d -> k ->> 'Selling')::numeric, 0) > 0 then
+          insert into public.rates (code, buying, selling, source, updated_at)
+          values (k, nullif((d -> k ->> 'Buying')::numeric, 0), (d -> k ->> 'Selling')::numeric, 'truncgil', now())
+          on conflict (code) do update
+            set buying = excluded.buying, selling = excluded.selling, source = excluded.source, updated_at = excluded.updated_at;
+          n := n + 1;
+        end if;
+      end loop;
+    end if;
+  exception when others then
+    raise warning 'truncgil kurları alınamadı: %', sqlerrm;
+  end;
+  if n > 0 then return; end if;
+
+  -- Yedek kaynak: döviz ve gram altın (piyasa ortası; çeyrek vb. önceki değerinde kalır)
+  begin
+    res := extensions.http_get('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/try.json');
+    d := res.content::jsonb -> 'try';
+    foreach k in array array['USD', 'EUR', 'GBP', 'CHF'] loop
+      insert into public.rates (code, buying, selling, source, updated_at)
+      values (k, null, round(1 / (d ->> lower(k))::numeric, 4), 'currency-api', now())
+      on conflict (code) do update
+        set buying = excluded.buying, selling = excluded.selling, source = excluded.source, updated_at = excluded.updated_at;
+    end loop;
+    insert into public.rates (code, buying, selling, source, updated_at)
+    values ('GRA', null, round(1 / (d ->> 'xau')::numeric / 31.1034768, 4), 'currency-api', now())
+    on conflict (code) do update
+      set buying = excluded.buying, selling = excluded.selling, source = excluded.source, updated_at = excluded.updated_at;
+  exception when others then
+    raise warning 'yedek kurlar da alınamadı: %', sqlerrm;
+  end;
+end;
+$$;
+
+revoke all on function private.update_rates() from public, anon, authenticated;
+
+-- İstanbul saatiyle 10:00 ve 17:00 (UTC 07:00 ve 14:00)
+select cron.schedule('update-rates', '0 7,14 * * *', 'select private.update_rates()');
