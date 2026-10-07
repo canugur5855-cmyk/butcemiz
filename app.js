@@ -454,27 +454,29 @@ function renderPortfolio() {
   ].filter(Boolean).join('<br>');
 }
 
-// Bozdurulmuş yatırımda kalan kısım: fiyatlıda miktar, değeri bilinmeyende maliyet
-// (değeri elle girilende "bugün" zaten yazıyor).
-function leftText(x) {
-  if (!withdrawalsOf(x).length) return '';
-  if (!hasLeft(x)) return ' · <span class="late">tamamı bozuldu</span>';
-  if (isPriced(x)) return ` · kalan ${qtyFmt(qtyLeft(x))} ${esc(UNITS[x.rate_code]?.unit ?? '')}`;
-  return hasManualValue(x) ? '' : ` · kalan ${fmt(costLeft(x))}`;
+// Büyük rakam güncel değer (bilinmiyorsa kalan maliyet); altta kalan maliyet ve kâr/zarar.
+// İkisinden de bozdurulan kısım düşülmüştür.
+function invNow(x) { return valueNow(x) ?? costLeft(x); }
+function costText(x) {
+  const v = valueNow(x);
+  return ` · maliyet ${fmt(costLeft(x))}${v != null ? ` ${gainHtml(v - costLeft(x))}` : ' · güncel değer girilmedi'}`;
 }
 
 function renderInvestments() {
   renderPortfolio();
-  const rows = inMonth(state.investments);
-  $('#inv-month-total').textContent = fmt(sum(rows, (x) => x.amount));
+  const month = inMonth(state.investments);
+  // o ay yatırıma giden para bozdurulsa da değişmez
+  $('#inv-month-total').textContent = fmt(sum(month, (x) => x.amount));
+  // tamamı bozulan yatırım listede yer kaplamaz; kaydı silinmez ki bağlandığı ayın hesabı bozulmasın
+  const rows = month.filter(hasLeft);
   $('#inv-empty').classList.toggle('hidden', rows.length > 0);
   $('#inv-list').innerHTML = rows.map((x) => `
     <li class="item ${isMe(x.user_id) ? 'editable' : ''}" data-id="${x.id}">
       <div class="item-main">
         <div class="item-title">${esc(UNITS[x.rate_code]?.name ?? x.asset_type)}${x.description ? ` <span class="muted">· ${esc(x.description)}</span>` : ''}</div>
-        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${qtyFmt(x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${valueNow(x) != null && hasLeft(x) ? ` · bugün ${fmt(valueNow(x))} ${gainHtml(valueNow(x) - costLeft(x))}` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''}${leftText(x)} ${ownerBadge(x.user_id)}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity && (!isPriced(x) || hasLeft(x)) ? ` · ${qtyFmt(isPriced(x) ? qtyLeft(x) : x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${costText(x)}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''} ${ownerBadge(x.user_id)}</div>
       </div>
-      <div class="amount invest">${fmt(x.amount)}</div>
+      <div class="amount invest">${fmt(invNow(x))}</div>
     </li>`).join('');
 }
 
