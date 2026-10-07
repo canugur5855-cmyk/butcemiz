@@ -194,19 +194,35 @@ function inMonth(rows, month = state.month) {
   return rows.filter((r) => r.date.startsWith(key));
 }
 
+// Ayın birikimi (gelir − gider) ve o birikime bağlanan yatırımlar.
+function monthSaving(month) {
+  return sum(inMonth(state.transactions, month), (t) => (t.kind === 'income' ? t.amount : -t.amount));
+}
+function linkedTo(month, exceptId = null) {
+  const key = `${monthKey(month)}-01`;
+  return state.investments.filter((x) => x.funded_month === key && x.id !== exceptId);
+}
+// Kenarda kalan = birikim − bağlanan yatırımlar
+function availableIn(month, exceptId = null) {
+  return monthSaving(month) - sum(linkedTo(month, exceptId), (x) => x.amount);
+}
+
 function renderSummary() {
   const tx = inMonth(state.transactions);
   const inv = inMonth(state.investments);
   const income = sum(tx.filter((t) => t.kind === 'income'), (t) => t.amount);
   const expense = sum(tx.filter((t) => t.kind === 'expense'), (t) => t.amount);
   const net = income - expense;
+  const linked = sum(linkedTo(state.month), (x) => x.amount);
+  const free = net - linked;
   const invested = sum(inv, (x) => x.amount);
 
   $('#sum-income').textContent = fmt(income);
   $('#sum-expense').textContent = fmt(expense);
-  $('#sum-net').textContent = fmt(net);
-  $('#sum-net').classList.toggle('negative', net < 0);
-  $('#sum-rate').textContent = income > 0 ? `Gelirin %${Math.round((net / income) * 100)}'i` : '';
+  $('#sum-net').textContent = fmt(free);
+  $('#sum-net').classList.toggle('negative', free < 0);
+  $('#sum-rate').textContent = linked > 0 ? `${fmt(net)} birikti, ${fmt(linked)} yatırıma bağlandı`
+    : income > 0 ? `Gelirin %${Math.round((net / income) * 100)}'i` : '';
   $('#sum-invest').textContent = fmt(invested);
 
   // kişi bazında
@@ -230,7 +246,7 @@ function renderSummary() {
     const mt = inMonth(state.transactions, m);
     const inc = sum(mt.filter((t) => t.kind === 'income'), (t) => t.amount);
     const exp = sum(mt.filter((t) => t.kind === 'expense'), (t) => t.amount);
-    return { m, inc, exp, net: inc - exp };
+    return { m, inc, exp, net: inc - exp - sum(linkedTo(m), (x) => x.amount) };
   });
   const max = Math.max(1, ...series.flatMap((s) => [s.inc, s.exp, Math.abs(s.net)]));
   $('#trend').innerHTML = series.map((s) => `
@@ -248,7 +264,8 @@ function renderSummary() {
   const allInc = sum(state.transactions.filter((t) => t.kind === 'income'), (t) => t.amount);
   const allExp = sum(state.transactions.filter((t) => t.kind === 'expense'), (t) => t.amount);
   const allInv = sum(state.investments, (x) => x.amount);
-  $('#all-net').textContent = fmt(allInc - allExp);
+  const allLinked = sum(state.investments.filter((x) => x.funded_month), (x) => x.amount);
+  $('#all-net').textContent = fmt(allInc - allExp - allLinked);
   $('#all-invest').textContent = fmt(allInv);
   const byAsset = {};
   for (const x of state.investments) byAsset[x.asset_type] = (byAsset[x.asset_type] || 0) + Number(x.amount);
@@ -274,9 +291,29 @@ function ownerBadge(id) {
 }
 
 function renderTransactions() {
-  const rows = filterByOwner(inMonth(state.transactions));
+  const tx = inMonth(state.transactions);
+  const linked = linkedTo(state.month);
+  const inc = sum(tx.filter((t) => t.kind === 'income'), (t) => t.amount);
+  const exp = sum(tx.filter((t) => t.kind === 'expense'), (t) => t.amount);
+  const lnk = sum(linked, (x) => x.amount);
+  $('#tx-strip').innerHTML = `
+    <div><span>Gelir</span><strong class="income">${fmt(inc)}</strong></div>
+    <div><span>Gider</span><strong class="expense">${fmt(exp)}</strong></div>
+    <div><span>Yatırıma bağlanan</span><strong class="invest">${fmt(lnk)}</strong></div>
+    <div><span>Kenarda kalan</span><strong class="net ${inc - exp - lnk < 0 ? 'negative' : ''}">${fmt(inc - exp - lnk)}</strong></div>`;
+
+  // bu ayın birikimine bağlanan yatırımlar da hareket olarak listelenir
+  const rows = filterByOwner([...tx, ...linked.map((x) => ({ ...x, isInv: true }))])
+    .sort((a, b) => b.date.localeCompare(a.date));
   $('#tx-empty').classList.toggle('hidden', rows.length > 0);
-  $('#tx-list').innerHTML = rows.map((t) => `
+  $('#tx-list').innerHTML = rows.map((t) => t.isInv ? `
+    <li class="item ${isMe(t.user_id) ? 'editable' : ''}" data-id="${t.id}" data-inv>
+      <div class="item-main">
+        <div class="item-title">📈 ${esc(t.asset_type)}${t.description ? ` <span class="muted">· ${esc(t.description)}</span>` : ''}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(t.date))} · yatırıma bağlandı ${ownerBadge(t.user_id)}</div>
+      </div>
+      <div class="amount invest">−${fmt(t.amount)}</div>
+    </li>` : `
     <li class="item ${isMe(t.user_id) ? 'editable' : ''}" data-id="${t.id}">
       <div class="item-main">
         <div class="item-title">${esc(t.category)}${t.note ? ` <span class="muted">· ${esc(t.note)}</span>` : ''}</div>
@@ -294,7 +331,7 @@ function renderInvestments() {
     <li class="item ${isMe(x.user_id) ? 'editable' : ''}" data-id="${x.id}">
       <div class="item-main">
         <div class="item-title">${esc(x.asset_type)}${x.description ? ` <span class="muted">· ${esc(x.description)}</span>` : ''}</div>
-        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${Number(x.quantity).toLocaleString('tr-TR')} adet/birim` : ''} ${ownerBadge(x.user_id)}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${Number(x.quantity).toLocaleString('tr-TR')} adet/birim` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''} ${ownerBadge(x.user_id)}</div>
       </div>
       <div class="amount invest">${fmt(x.amount)}</div>
     </li>`).join('');
@@ -416,7 +453,10 @@ function openTxDialog(tx, preset = null) {
 
 $('#tx-list').addEventListener('click', (e) => {
   const li = e.target.closest('li.editable');
-  if (li) openTxDialog(state.transactions.find((t) => t.id === Number(li.dataset.id)));
+  if (!li) return;
+  const id = Number(li.dataset.id);
+  if ('inv' in li.dataset) openInvDialog(state.investments.find((x) => x.id === id));
+  else openTxDialog(state.transactions.find((t) => t.id === id));
 });
 
 $('#tx-form').addEventListener('submit', async (e) => {
@@ -455,6 +495,19 @@ $('#tx-delete').addEventListener('click', async () => {
 // ---------- yatırım formu ----------
 $('#inv-type').innerHTML = ASSET_TYPES.map((c) => `<option>${esc(c)}</option>`).join('');
 
+// Kenarda parası olan aylar, yeniden eskiye. Düzenlenen yatırımın bağlı olduğu ay her zaman listelenir.
+function fundingOptions(inv) {
+  const keys = [...new Set(state.transactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
+  const opts = ['<option value="">Bağlama — dış kaynak / eski birikim</option>'];
+  for (const k of keys) {
+    const value = `${k}-01`;
+    const free = availableIn(parseDate(value), inv?.id);
+    if (free <= 0 && inv?.funded_month !== value) continue;
+    opts.push(`<option value="${value}">${monthFmt.format(parseDate(value))} — kenarda ${fmt(free)}</option>`);
+  }
+  return opts.join('');
+}
+
 function openInvDialog(inv) {
   state.editingInv = inv;
   const f = $('#inv-form');
@@ -466,6 +519,11 @@ function openInvDialog(inv) {
   f.quantity.value = inv?.quantity ?? '';
   f.description.value = inv?.description ?? '';
   f.date.value = inv?.date ?? defaultDate();
+  $('#inv-funded').innerHTML = fundingOptions(inv);
+  // yeni yatırım varsayılan olarak seçili ayın birikimine bağlanır (kenarda para varsa)
+  f.funded_month.value = inv ? (inv.funded_month ?? '')
+    : availableIn(state.month) > 0 ? `${monthKey(state.month)}-01` : '';
+  $('#inv-error').textContent = '';
   $('#inv-dialog').showModal();
 }
 
@@ -483,7 +541,16 @@ $('#inv-form').addEventListener('submit', async (e) => {
     quantity: f.quantity.value ? Number(f.quantity.value) : null,
     description: f.description.value.trim() || null,
     date: f.date.value,
+    funded_month: f.funded_month.value || null,
   };
+  if (row.funded_month) {
+    const free = availableIn(parseDate(row.funded_month), state.editingInv?.id);
+    if (row.amount > free + 0.005) {
+      $('#inv-error').textContent = `${monthFmt.format(parseDate(row.funded_month))} için kenarda ${fmt(free)} var. `
+        + 'Fazlası başka aydan geldiyse yatırımı ikiye bölüp her parçayı ayrı aya bağlayın.';
+      return;
+    }
+  }
   const q = state.editingInv
     ? sb.from('investments').update(row).eq('id', state.editingInv.id)
     : sb.from('investments').insert(row);

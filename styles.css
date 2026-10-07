@@ -175,6 +175,15 @@ main { padding: 4px 12px calc(96px + var(--safe-bottom)); max-width: 640px; marg
 .badge.me { background: var(--me); }
 .badge.partner { background: var(--partner); }
 
+/* ---------- hareketler ay özeti ---------- */
+.month-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; padding: 12px 14px; }
+.month-strip span { display: block; font-size: 12px; color: var(--muted); }
+.month-strip strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.month-strip .income { color: var(--income); }
+.month-strip .expense { color: var(--expense); }
+.month-strip .invest { color: var(--invest); }
+.month-strip .net { color: var(--net); }
+
 /* ---------- beklenen gelirler ---------- */
 .group-head {
   display: flex; justify-content: space-between; margin: 16px 4px 6px;

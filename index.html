@@ -94,6 +94,7 @@
           <button data-filter="me">Benim</button>
           <button data-filter="partner">Eşimin</button>
         </div>
+        <div class="card month-strip" id="tx-strip"></div>
         <ul id="tx-list" class="list"></ul>
         <p id="tx-empty" class="empty hidden">Bu ay henüz kayıt yok.</p>
       </section>
@@ -181,6 +182,9 @@
       <label>Tutar (₺)
         <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
       </label>
+      <label>Hangi paradan yapıldı?
+        <select name="funded_month" id="inv-funded"></select>
+      </label>
       <label>Miktar / adet
         <input name="quantity" type="number" inputmode="decimal" step="any" placeholder="Örn. 5 gram, 100 dolar, 10 lot">
       </label>
@@ -190,6 +194,7 @@
       <label>Tarih
         <input name="date" type="date" required>
       </label>
+      <p id="inv-error" class="error"></p>
       <div class="actions">
         <button type="button" class="btn danger hidden" id="inv-delete">Sil</button>
         <button type="button" class="btn ghost" data-close>Vazgeç</button>

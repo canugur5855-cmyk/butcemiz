@@ -81,6 +81,9 @@ create table public.investments (
   amount numeric(14, 2) not null check (amount > 0),
   quantity numeric(18, 6),
   date date not null default current_date,
+  -- Hangi ayın kenarda kalan parasıyla yapıldı (ayın 1'i). Null: kenardaki paraya bağlı değil.
+  -- Bağlı yatırımlar o ayın "kenara kalan" tutarından düşülür.
+  funded_month date check (funded_month is null or extract(day from funded_month) = 1),
   created_at timestamptz not null default now()
 );
 create index investments_date_idx on public.investments (date);
