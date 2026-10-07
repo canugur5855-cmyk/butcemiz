@@ -105,6 +105,20 @@
         <p id="inv-empty" class="empty hidden">Bu ay henüz yatırım kaydı yok.</p>
       </section>
 
+      <!-- BEKLENEN GELİRLER -->
+      <section id="tab-expected" class="tab hidden">
+        <div class="cards">
+          <div class="card stat income"><span>Önümüzdeki 30 gün</span><strong id="exp-soon"></strong></div>
+          <div class="card stat net"><span>Toplam bekleyen</span><strong id="exp-total"></strong><small id="exp-overdue"></small></div>
+        </div>
+        <div class="segmented" id="exp-filter">
+          <button data-filter="pending" class="active">Bekleyen</button>
+          <button data-filter="received">Gelenler</button>
+        </div>
+        <div id="exp-groups"></div>
+        <p id="exp-empty" class="empty hidden">Beklenen gelir yok.</p>
+      </section>
+
       <!-- ALIŞVERİŞ -->
       <section id="tab-shopping" class="tab hidden">
         <form id="shop-form" class="shop-form">
@@ -124,6 +138,7 @@
       <button data-tab="summary" class="active"><span>📊</span>Özet</button>
       <button data-tab="transactions"><span>💸</span>Hareketler</button>
       <button data-tab="investments"><span>📈</span>Yatırım</button>
+      <button data-tab="expected"><span>⏳</span>Beklenen</button>
       <button data-tab="shopping"><span>🛒</span>Alışveriş</button>
     </nav>
   </div>
@@ -180,6 +195,51 @@
         <button type="button" class="btn ghost" data-close>Vazgeç</button>
         <button type="submit" class="btn primary">Kaydet</button>
       </div>
+    </form>
+  </dialog>
+
+  <!-- Beklenen gelir formu -->
+  <dialog id="exp-dialog" class="sheet">
+    <form id="exp-form" method="dialog">
+      <h3 id="exp-title">Beklenen gelir</h3>
+      <div class="segmented" id="exp-mode">
+        <button type="button" data-mode="single" class="active">Tek seferlik</button>
+        <button type="button" data-mode="installment">Taksitli</button>
+      </div>
+      <label>Kimden
+        <input name="source" placeholder="Örn. Ahmet Bey, X Şirketi" autocomplete="off" required>
+      </label>
+      <label><span id="exp-amount-label">Tutar (₺)</span>
+        <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
+      </label>
+      <fieldset id="exp-installment" class="hidden" disabled>
+        <div class="row">
+          <label>Taksit sayısı
+            <input name="count" type="number" inputmode="numeric" min="2" max="60" step="1" value="2">
+          </label>
+          <label>Girilen tutar
+            <select name="amount_type">
+              <option value="each">Her taksit</option>
+              <option value="total">Toplam</option>
+            </select>
+          </label>
+        </div>
+        <p id="exp-preview" class="hint"></p>
+      </fieldset>
+      <label><span id="exp-date-label">Tarih</span>
+        <input name="date" type="date" required>
+      </label>
+      <label>Not
+        <input name="note" placeholder="İsteğe bağlı" autocomplete="off">
+      </label>
+      <button type="button" class="btn income-btn hidden" id="exp-receive">✓ Geldi — gelirlere ekle</button>
+      <button type="button" class="btn ghost wide hidden" id="exp-unreceive">Gelmedi olarak işaretle</button>
+      <div class="actions">
+        <button type="button" class="btn danger hidden" id="exp-delete">Sil</button>
+        <button type="button" class="btn ghost" data-close>Vazgeç</button>
+        <button type="submit" class="btn primary">Kaydet</button>
+      </div>
+      <button type="button" class="btn danger hidden" id="exp-delete-plan">Kalan tüm taksitleri sil</button>
     </form>
   </dialog>
 

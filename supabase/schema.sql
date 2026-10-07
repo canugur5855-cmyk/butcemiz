@@ -87,6 +87,29 @@ create index investments_date_idx on public.investments (date);
 create index investments_user_id_idx on public.investments (user_id);
 
 -- ---------------------------------------------------------------
+-- Beklenen (potansiyel) gelirler. Taksitli ödemede her taksit ayrı satırdır,
+-- aynı plan_id ile bağlanır (installment_no / installment_count: 2/5 gibi).
+-- ---------------------------------------------------------------
+create table public.expected_incomes (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  source text not null,
+  amount numeric(14, 2) not null check (amount > 0),
+  date date not null,
+  note text,
+  plan_id uuid,
+  installment_no int,
+  installment_count int,
+  received boolean not null default false,
+  created_at timestamptz not null default now(),
+  check ((plan_id is null) = (installment_no is null) and (plan_id is null) = (installment_count is null)),
+  check (installment_no is null or installment_no between 1 and installment_count)
+);
+create index expected_incomes_date_idx on public.expected_incomes (date);
+create index expected_incomes_user_id_idx on public.expected_incomes (user_id);
+create index expected_incomes_plan_id_idx on public.expected_incomes (plan_id);
+
+-- ---------------------------------------------------------------
 -- Ortak alışveriş listesi
 -- ---------------------------------------------------------------
 create table public.shopping_items (
@@ -138,6 +161,18 @@ create policy "investments_update_own" on public.investments
 create policy "investments_delete_own" on public.investments
   for delete to authenticated using (user_id = (select auth.uid()));
 
+-- Beklenen gelirler: aynı kurallar.
+alter table public.expected_incomes enable row level security;
+create policy "expected_select" on public.expected_incomes
+  for select to authenticated using ((select private.is_member()));
+create policy "expected_insert_own" on public.expected_incomes
+  for insert to authenticated with check (user_id = (select auth.uid()));
+create policy "expected_update_own" on public.expected_incomes
+  for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+create policy "expected_delete_own" on public.expected_incomes
+  for delete to authenticated using (user_id = (select auth.uid()));
+
 -- Alışveriş listesi: ortak, iki üye de her şeyi yapabilir.
 create policy "shopping_select" on public.shopping_items
   for select to authenticated using ((select private.is_member()));
@@ -151,4 +186,5 @@ create policy "shopping_delete" on public.shopping_items
 -- ---------------------------------------------------------------
 -- Canlı senkron (bir telefonda eklenen diğerinde anında görünsün)
 -- ---------------------------------------------------------------
-alter publication supabase_realtime add table public.transactions, public.investments, public.shopping_items;
+alter publication supabase_realtime add table public.transactions, public.investments, public.shopping_items,
+  public.expected_incomes;

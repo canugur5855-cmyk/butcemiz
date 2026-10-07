@@ -14,11 +14,16 @@ const state = {
   transactions: [],
   investments: [],
   shopping: [],
+  expected: [],
   month: startOfMonth(new Date()),
   tab: 'summary',
   txFilter: 'all',
   editingTx: null,
   editingInv: null,
+  editingExp: null,
+  receivingExp: null,  // "Geldi" denince açılan gelir formu kaydedilince bu beklenen gelir kapanır
+  expMode: 'single',
+  expFilter: 'pending',
   txKind: 'expense',
   channel: null,
 };
@@ -30,13 +35,20 @@ const fmt = (n) => money.format(n || 0);
 const monthFmt = new Intl.DateTimeFormat('tr-TR', { month: 'long', year: 'numeric' });
 const shortMonthFmt = new Intl.DateTimeFormat('tr-TR', { month: 'short' });
 const dayFmt = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short' });
+const fullDayFmt = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' });
 
 function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
 function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
-function todayISO() {
-  const d = new Date();
+function toISO(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayISO() { return toISO(new Date()); }
+// Ay ekler; gün o ayda yoksa ayın son gününe düşer (31 Ocak + 1 ay → 28/29 Şubat).
+function addMonthsISO(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const last = new Date(y, m - 1 + n + 1, 0).getDate();
+  return toISO(new Date(y, m - 1 + n, Math.min(d, last)));
 }
 function parseDate(iso) { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
@@ -129,17 +141,19 @@ async function startApp() {
 
 // ---------- veri ----------
 async function loadAll() {
-  const [p, t, i, s] = await Promise.all([
+  const [p, t, i, s, x] = await Promise.all([
     sb.from('profiles').select('id, display_name'),
     sb.from('transactions').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
     sb.from('investments').select('*').order('date', { ascending: false }).order('id', { ascending: false }),
     sb.from('shopping_items').select('*').order('checked').order('created_at', { ascending: false }),
+    sb.from('expected_incomes').select('*').order('date').order('id'),
   ]);
-  for (const r of [p, t, i, s]) if (r.error) return fail(r.error);
+  for (const r of [p, t, i, s, x]) if (r.error) return fail(r.error);
   state.profiles = Object.fromEntries(p.data.map((x) => [x.id, x.display_name]));
   state.transactions = t.data;
   state.investments = i.data;
   state.shopping = s.data;
+  state.expected = x.data;
   render();
 }
 
@@ -155,6 +169,7 @@ function subscribe() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, scheduleReload)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'investments' }, scheduleReload)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_items' }, scheduleReload)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'expected_incomes' }, scheduleReload)
     .subscribe();
 }
 
@@ -170,6 +185,7 @@ function render() {
   renderSummary();
   renderTransactions();
   renderInvestments();
+  renderExpected();
   renderShopping();
 }
 
@@ -284,6 +300,37 @@ function renderInvestments() {
     </li>`).join('');
 }
 
+function renderExpected() {
+  const today = todayISO();
+  const soon = toISO(new Date(Date.now() + 30 * 864e5));
+  const pending = state.expected.filter((x) => !x.received);
+  const overdue = pending.filter((x) => x.date < today);
+  $('#exp-soon').textContent = fmt(sum(pending.filter((x) => x.date <= soon), (x) => x.amount));
+  $('#exp-total').textContent = fmt(sum(pending, (x) => x.amount));
+  $('#exp-overdue').textContent = overdue.length ? `${overdue.length} ödeme gecikmiş` : '';
+
+  // bekleyenler yakından uzağa, gelenler yeniden eskiye; ay ay gruplanır
+  const rows = state.expFilter === 'pending' ? pending : state.expected.filter((x) => x.received).reverse();
+  const groups = new Map();
+  for (const x of rows) {
+    const k = x.date.slice(0, 7);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(x);
+  }
+  $('#exp-empty').textContent = state.expFilter === 'pending' ? 'Beklenen gelir yok.' : 'Henüz gelen ödeme yok.';
+  $('#exp-empty').classList.toggle('hidden', rows.length > 0);
+  $('#exp-groups').innerHTML = [...groups].map(([k, xs]) => `
+    <div class="group-head"><span>${monthFmt.format(parseDate(`${k}-01`))}</span><span>${fmt(sum(xs, (x) => x.amount))}</span></div>
+    <ul class="list">${xs.map((x) => `
+      <li class="item ${isMe(x.user_id) ? 'editable' : ''}" data-id="${x.id}">
+        <div class="item-main">
+          <div class="item-title">${esc(x.source)}${x.plan_id ? ` <span class="muted">· Taksit ${x.installment_no}/${x.installment_count}</span>` : ''}${x.note ? ` <span class="muted">· ${esc(x.note)}</span>` : ''}</div>
+          <div class="item-sub">${dayFmt.format(parseDate(x.date))}${!x.received && x.date < today ? ' <span class="late">gecikti</span>' : ''} ${ownerBadge(x.user_id)}</div>
+        </div>
+        <div class="amount income">${fmt(x.amount)}</div>
+      </li>`).join('')}</ul>`).join('');
+}
+
 function renderShopping() {
   const rows = [...state.shopping].sort((a, b) => a.checked - b.checked);
   $('#shop-empty').classList.toggle('hidden', rows.length > 0);
@@ -308,7 +355,7 @@ document.querySelectorAll('.tabbar button').forEach((b) => b.addEventListener('c
   document.querySelectorAll('.tabbar button').forEach((x) => x.classList.toggle('active', x === b));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('hidden', s.id !== `tab-${state.tab}`));
   $('#fab').classList.toggle('hidden', state.tab === 'shopping');
-  $('.month-nav').classList.toggle('invisible', state.tab === 'shopping');
+  $('.month-nav').classList.toggle('invisible', state.tab === 'shopping' || state.tab === 'expected');
   window.scrollTo(0, 0);
 }));
 
@@ -325,7 +372,9 @@ $('#tx-filter').addEventListener('click', (e) => {
 
 // Hangi sekmedeysek + butonu ona uygun formu açar.
 $('#fab').addEventListener('click', () => {
-  if (state.tab === 'investments') openInvDialog(null); else openTxDialog(null);
+  if (state.tab === 'investments') openInvDialog(null);
+  else if (state.tab === 'expected') openExpDialog(null);
+  else openTxDialog(null);
 });
 
 document.querySelectorAll('dialog [data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
@@ -349,16 +398,19 @@ $('#tx-kind').addEventListener('click', (e) => {
   if (b) setTxKind(b.dataset.kind);
 });
 
-function openTxDialog(tx) {
+// preset: yeni kayıt için önceden doldurulacak alanlar (ör. beklenen gelir geldiğinde).
+function openTxDialog(tx, preset = null) {
   state.editingTx = tx;
+  state.receivingExp = null;
+  const d = tx ?? preset;
   const f = $('#tx-form');
   f.reset();
   $('#tx-title').textContent = tx ? 'Kaydı düzenle' : 'Yeni kayıt';
   $('#tx-delete').classList.toggle('hidden', !tx);
-  setTxKind(tx?.kind || 'expense', tx?.category);
-  f.amount.value = tx?.amount ?? '';
-  f.date.value = tx?.date ?? defaultDate();
-  f.note.value = tx?.note ?? '';
+  setTxKind(d?.kind || 'expense', d?.category);
+  f.amount.value = d?.amount ?? '';
+  f.date.value = d?.date ?? defaultDate();
+  f.note.value = d?.note ?? '';
   $('#tx-dialog').showModal();
 }
 
@@ -382,6 +434,10 @@ $('#tx-form').addEventListener('submit', async (e) => {
     : sb.from('transactions').insert(row);
   const { error } = await q;
   if (error) return fail(error);
+  if (state.receivingExp) {
+    const { error: e2 } = await sb.from('expected_incomes').update({ received: true }).eq('id', state.receivingExp.id);
+    if (e2) fail(e2);
+  }
   $('#tx-dialog').close();
   toast('Kaydedildi');
   loadAll();
@@ -444,6 +500,143 @@ $('#inv-delete').addEventListener('click', async () => {
   if (error) return fail(error);
   $('#inv-dialog').close();
   toast('Silindi');
+  loadAll();
+});
+
+// ---------- beklenen gelirler ----------
+$('#exp-filter').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  state.expFilter = b.dataset.filter;
+  $('#exp-filter').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+  renderExpected();
+});
+
+// Taksit tutarları kuruş hassasiyetinde; toplam eşit bölünmüyorsa artan kuruşlar son taksite eklenir.
+function installmentAmounts(amount, count, type) {
+  if (type === 'each') return Array(count).fill(amount);
+  const cents = Math.round(amount * 100);
+  const base = Math.floor(cents / count);
+  return Array.from({ length: count }, (_, i) => (i === count - 1 ? cents - base * (count - 1) : base) / 100);
+}
+
+function setExpMode(mode) {
+  state.expMode = mode;
+  $('#exp-mode').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  const inst = mode === 'installment';
+  // gizli alanlar form doğrulamasına takılmasın diye fieldset kapatılır
+  $('#exp-installment').classList.toggle('hidden', !inst);
+  $('#exp-installment').disabled = !inst;
+  $('#exp-date-label').textContent = inst ? 'İlk taksit tarihi' : 'Tarih';
+  updateExpPreview();
+}
+
+function updateExpPreview() {
+  const f = $('#exp-form');
+  const count = Number(f.count.value);
+  const amount = Number(f.amount.value);
+  if (state.expMode !== 'installment' || !Number.isInteger(count) || count < 2 || !(amount > 0)) {
+    $('#exp-preview').textContent = '';
+    return;
+  }
+  const parts = installmentAmounts(amount, count, f.amount_type.value);
+  const last = f.date.value ? `, son taksit ${fullDayFmt.format(parseDate(addMonthsISO(f.date.value, count - 1)))}` : '';
+  $('#exp-preview').textContent = `Her ay ${fmt(parts[0])} × ${count} = ${fmt(sum(parts))}${last}`;
+}
+
+$('#exp-mode').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) setExpMode(b.dataset.mode);
+});
+$('#exp-form').addEventListener('input', updateExpPreview);
+
+function openExpDialog(x) {
+  state.editingExp = x;
+  const f = $('#exp-form');
+  f.reset();
+  $('#exp-title').textContent = !x ? 'Beklenen gelir'
+    : x.plan_id ? `Taksit ${x.installment_no}/${x.installment_count}` : 'Beklenen geliri düzenle';
+  $('#exp-mode').classList.toggle('hidden', !!x);
+  setExpMode('single');
+  $('#exp-amount-label').textContent = x?.plan_id ? 'Bu taksitin tutarı (₺)' : 'Tutar (₺)';
+  f.source.value = x?.source ?? '';
+  f.amount.value = x?.amount ?? '';
+  f.date.value = x?.date ?? todayISO();
+  f.note.value = x?.note ?? '';
+  $('#exp-delete').classList.toggle('hidden', !x);
+  $('#exp-delete-plan').classList.toggle('hidden', !x?.plan_id);
+  $('#exp-receive').classList.toggle('hidden', !x || x.received);
+  $('#exp-unreceive').classList.toggle('hidden', !x?.received);
+  $('#exp-dialog').showModal();
+}
+
+$('#exp-groups').addEventListener('click', (e) => {
+  const li = e.target.closest('li.editable');
+  if (li) openExpDialog(state.expected.find((x) => x.id === Number(li.dataset.id)));
+});
+
+$('#exp-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const base = { source: f.source.value.trim(), note: f.note.value.trim() || null };
+  if (!base.source) return;
+  const amount = Number(f.amount.value);
+  let q;
+  if (state.editingExp) {
+    q = sb.from('expected_incomes').update({ ...base, amount, date: f.date.value }).eq('id', state.editingExp.id);
+  } else if (state.expMode === 'installment') {
+    const count = Number(f.count.value);
+    const plan_id = crypto.randomUUID();
+    const rows = installmentAmounts(amount, count, f.amount_type.value).map((a, i) => ({
+      ...base, amount: a, date: addMonthsISO(f.date.value, i), plan_id, installment_no: i + 1, installment_count: count,
+    }));
+    q = sb.from('expected_incomes').insert(rows);
+  } else {
+    q = sb.from('expected_incomes').insert({ ...base, amount, date: f.date.value });
+  }
+  const { error } = await q;
+  if (error) return fail(error);
+  $('#exp-dialog').close();
+  toast('Kaydedildi');
+  loadAll();
+});
+
+// Ödeme gelince gelir formu dolu açılır; kaydedilince beklenen gelir "geldi" olur.
+$('#exp-receive').addEventListener('click', () => {
+  const x = state.editingExp;
+  if (!x) return;
+  $('#exp-dialog').close();
+  const note = x.plan_id ? `${x.source} (taksit ${x.installment_no}/${x.installment_count})` : x.source;
+  openTxDialog(null, { kind: 'income', category: 'Diğer', amount: x.amount, date: todayISO(), note });
+  state.receivingExp = x;
+  $('#tx-title').textContent = 'Gelen ödemeyi kaydet';
+});
+
+$('#exp-unreceive').addEventListener('click', async () => {
+  if (!state.editingExp) return;
+  const { error } = await sb.from('expected_incomes').update({ received: false }).eq('id', state.editingExp.id);
+  if (error) return fail(error);
+  $('#exp-dialog').close();
+  toast('Tekrar bekleyenlere alındı');
+  loadAll();
+});
+
+$('#exp-delete').addEventListener('click', async () => {
+  if (!state.editingExp) return;
+  const { error } = await sb.from('expected_incomes').delete().eq('id', state.editingExp.id);
+  if (error) return fail(error);
+  $('#exp-dialog').close();
+  toast('Silindi');
+  loadAll();
+});
+
+$('#exp-delete-plan').addEventListener('click', async () => {
+  const x = state.editingExp;
+  if (!x?.plan_id) return;
+  const { error } = await sb.from('expected_incomes').delete().eq('plan_id', x.plan_id).eq('received', false);
+  if (error) return fail(error);
+  $('#exp-dialog').close();
+  toast('Kalan taksitler silindi');
   loadAll();
 });
 
