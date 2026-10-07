@@ -195,6 +195,10 @@
         <input name="quantity" type="number" inputmode="decimal" step="any" min="0" placeholder="Örn. 5 gram, 100 dolar, 10 lot">
       </label>
       <p id="inv-rate-hint" class="hint"></p>
+      <label id="inv-value-row" class="hidden">Güncel değeri (₺)
+        <input name="current_value" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Bilmiyorsan boş bırak">
+      </label>
+      <p id="inv-value-hint" class="hint"></p>
       <label><span id="inv-amount-label">Tutar (₺)</span>
         <input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" required>
       </label>

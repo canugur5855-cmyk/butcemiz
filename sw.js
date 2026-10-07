@@ -1,5 +1,5 @@
 // Uygulama kabuğunu önbelleğe alır; veriler her zaman Supabase'den canlı gelir.
-const CACHE = 'butcemiz-v7';
+const CACHE = 'butcemiz-v8';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

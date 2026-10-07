@@ -34,7 +34,8 @@ const state = {
   editingInv: null,
   editingWd: null,
   wdInv: null,           // çekiş formunun ait olduğu yatırım
-  invAmountTouched: false,  // tutar elle girildiyse kurdan otomatik doldurma durur
+  invAmountTouched: false,
+  invValueShown: '',     // yatırım formunda gösterilen güncel değer; değişmediyse yeniden kaydedilmez  // tutar elle girildiyse kurdan otomatik doldurma durur
   editingExp: null,
   receivingExp: null,  // "Geldi" denince açılan gelir formu kaydedilince bu beklenen gelir kapanır
   expMode: 'single',
@@ -251,15 +252,27 @@ function invName(x) {
   return (UNITS[x.rate_code]?.name ?? x.asset_type) + (x.description ? ` · ${x.description}` : '');
 }
 
-// Bugünkü değer: bozdurulursa alınacak fiyat (alış), yoksa satış. Fiyatı takip edilmeyen yatırımda null.
+// Bugünkü değer: bozdurulursa alınacak fiyat (alış), yoksa satış.
+// Fiyatı takip edilmeyende elle girilen değerden, girildikten sonraki çekişler düşülür; o da yoksa null.
 function unitPrice(code) {
   const r = state.rates[code];
   return r ? Number(r.buying ?? r.selling) : null;
 }
-function valueNow(x) {
+function hasManualValue(x) { return !isPriced(x) && x.current_value != null; }
+function valueNow(x, exceptId = null) {
+  if (hasManualValue(x)) {
+    const at = new Date(x.current_value_at);
+    const after = withdrawalsOf(x, exceptId).filter((w) => new Date(w.created_at) > at);
+    return Math.max(0, Number(x.current_value) - sum(after, (w) => Number(w.amount) + Number(w.tax)));
+  }
   const price = x.rate_code && unitPrice(x.rate_code);
   if (!price || x.quantity == null) return null;
-  return qtyLeft(x) * price;
+  return qtyLeft(x, exceptId) * price;
+}
+// Yatırımda bozdurulacak bir şey kaldı mı
+function hasLeft(x) {
+  if (isPriced(x)) return qtyLeft(x) > 0;
+  return hasManualValue(x) ? valueNow(x) > 0 : costLeft(x) > 0;
 }
 
 function renderSummary() {
@@ -329,7 +342,7 @@ function renderSummary() {
   const allNow = sum(state.investments, (x) => valueNow(x) ?? costLeft(x));
   $('#all-invest-now').textContent = state.investments.some((x) => valueNow(x) != null) ? `Bugün ${fmt(allNow)}` : '';
   const byAsset = {};
-  for (const x of state.investments) if (costLeft(x) > 0) byAsset[x.asset_type] = (byAsset[x.asset_type] || 0) + costLeft(x);
+  for (const x of state.investments) if (hasLeft(x) && costLeft(x) > 0) byAsset[x.asset_type] = (byAsset[x.asset_type] || 0) + costLeft(x);
   $('#asset-bars').innerHTML = barRows(byAsset, allInv, 'invest');
 }
 
@@ -402,7 +415,9 @@ function gainHtml(gain) {
 
 function renderPortfolio() {
   // tamamen bozdurulanlar portföyde görünmez
-  const priced = state.investments.filter((x) => valueNow(x) != null && qtyLeft(x) > 0);
+  const valued = state.investments.filter((x) => valueNow(x) != null && hasLeft(x));
+  const priced = valued.filter(isPriced);
+  const manual = valued.filter(hasManualValue);
   const byCode = {};
   for (const x of priced) {
     const g = (byCode[x.rate_code] ??= { qty: 0, cost: 0, value: 0 });
@@ -410,31 +425,42 @@ function renderPortfolio() {
     g.cost += costLeft(x);
     g.value += valueNow(x);
   }
-  const value = sum(priced, valueNow);
-  const cost = sum(priced, costLeft);
+  const value = sum(valued, valueNow);
+  const cost = sum(valued, costLeft);
   $('#pf-value').textContent = fmt(value);
-  $('#pf-gain').innerHTML = priced.length ? gainHtml(value - cost) : fmt(0);
-  $('#pf-rows').innerHTML = Object.entries(byCode).sort((a, b) => b[1].value - a[1].value).map(([code, g]) => `
+  $('#pf-gain').innerHTML = valued.length ? gainHtml(value - cost) : fmt(0);
+  const rows = [
+    ...Object.entries(byCode).map(([code, g]) => ({ value: g.value, html: `
     <div class="pf-row">
       <div><strong>${esc(UNITS[code]?.name ?? code)}</strong>
         <small class="muted">${qtyFmt(g.qty)} ${esc(UNITS[code]?.unit ?? '')} · 1 ${esc(UNITS[code]?.unit ?? '')} = ${fmt(state.rates[code].buying ?? state.rates[code].selling)}</small></div>
       <div class="pf-val">${fmt(g.value)}<small>${gainHtml(g.value - g.cost)}</small></div>
-    </div>`).join('');
+    </div>` })),
+    ...manual.map((x) => ({ value: valueNow(x), html: `
+    <div class="pf-row">
+      <div><strong>${esc(invName(x))}</strong>
+        <small class="muted">değer elle girildi · ${dayFmt.format(new Date(x.current_value_at))}</small></div>
+      <div class="pf-val">${fmt(valueNow(x))}<small>${gainHtml(valueNow(x) - costLeft(x))}</small></div>
+    </div>` })),
+  ];
+  $('#pf-rows').innerHTML = rows.sort((a, b) => b.value - a.value).map((r) => r.html).join('');
 
   const untracked = state.investments.filter((x) => valueNow(x) == null && costLeft(x) > 0);
   const stamps = Object.values(state.rates).map((q) => q.updated_at).sort();
   $('#pf-note').innerHTML = [
-    priced.length ? '' : 'Altın ve döviz yatırımlarına birim ve miktar girince bugünkü değerleri burada görünür.',
-    untracked.length ? `Fiyatı takip edilmeyen ${untracked.length} yatırım (kalan maliyetiyle ${fmt(sum(untracked, costLeft))}) bu hesaba dahil değil.` : '',
+    valued.length ? '' : 'Altın ve döviz yatırımlarına birim ve miktar girince bugünkü değerleri burada görünür.',
+    untracked.length ? `Güncel değeri bilinmeyen ${untracked.length} yatırım (kalan maliyetiyle ${fmt(sum(untracked, costLeft))}) bu hesaba dahil değil. Fon gibi yatırımların değerini yatırımı açıp elle girebilirsin.` : '',
     stamps.length ? `Kurlar ${stampFmt.format(new Date(stamps.at(-1)))} itibarıyla, her gün 10:00 ve 17:00'de güncellenir.` : '',
   ].filter(Boolean).join('<br>');
 }
 
-// Bozdurulmuş yatırımda kalan kısım: fiyatlıda miktar, diğerlerinde maliyet.
+// Bozdurulmuş yatırımda kalan kısım: fiyatlıda miktar, değeri bilinmeyende maliyet
+// (değeri elle girilende "bugün" zaten yazıyor).
 function leftText(x) {
   if (!withdrawalsOf(x).length) return '';
-  if (costLeft(x) <= 0) return ' · <span class="late">tamamı bozuldu</span>';
-  return isPriced(x) ? ` · kalan ${qtyFmt(qtyLeft(x))} ${esc(UNITS[x.rate_code]?.unit ?? '')}` : ` · kalan ${fmt(costLeft(x))}`;
+  if (!hasLeft(x)) return ' · <span class="late">tamamı bozuldu</span>';
+  if (isPriced(x)) return ` · kalan ${qtyFmt(qtyLeft(x))} ${esc(UNITS[x.rate_code]?.unit ?? '')}`;
+  return hasManualValue(x) ? '' : ` · kalan ${fmt(costLeft(x))}`;
 }
 
 function renderInvestments() {
@@ -446,7 +472,7 @@ function renderInvestments() {
     <li class="item ${isMe(x.user_id) ? 'editable' : ''}" data-id="${x.id}">
       <div class="item-main">
         <div class="item-title">${esc(UNITS[x.rate_code]?.name ?? x.asset_type)}${x.description ? ` <span class="muted">· ${esc(x.description)}</span>` : ''}</div>
-        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${qtyFmt(x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${valueNow(x) != null ? ` · bugün ${fmt(valueNow(x))} ${gainHtml(valueNow(x) - x.amount)}` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''}${leftText(x)} ${ownerBadge(x.user_id)}</div>
+        <div class="item-sub">${dayFmt.format(parseDate(x.date))}${x.quantity ? ` · ${qtyFmt(x.quantity)} ${esc(UNITS[x.rate_code]?.unit ?? 'adet/birim')}` : ''}${valueNow(x) != null && hasLeft(x) ? ` · bugün ${fmt(valueNow(x))} ${gainHtml(valueNow(x) - costLeft(x))}` : ''}${x.funded_month ? ` · ${monthFmt.format(parseDate(x.funded_month))} birikiminden` : ''}${leftText(x)} ${ownerBadge(x.user_id)}</div>
       </div>
       <div class="amount invest">${fmt(x.amount)}</div>
     </li>`).join('');
@@ -631,6 +657,8 @@ function updateInvRate() {
   $('#inv-qty-label').textContent = unit ? `Miktar (${unit})` : 'Miktar / adet';
   f.quantity.required = !!code;
   $('#inv-amount-label').textContent = code ? 'Ödenen tutar (₺)' : 'Tutar (₺)';
+  // fiyatı otomatik bulunamayan yatırımın güncel değeri elle girilir
+  $('#inv-value-row').classList.toggle('hidden', !!code);
   if (!r) { $('#inv-rate-hint').textContent = ''; return; }
   $('#inv-rate-hint').textContent = `Satış: 1 ${unit} = ${fmt(r.selling)} · ${stampFmt.format(new Date(r.updated_at))}`;
   if (!state.invAmountTouched && Number(f.quantity.value) > 0) {
@@ -685,13 +713,19 @@ function openInvDialog(inv) {
   // yeni yatırım varsayılan olarak seçili ayın birikimine bağlanır
   f.funded_month.value = inv ? (inv.funded_month ?? '') : `${monthKey(state.month)}-01`;
   updateFundHint();
+  // değer alanı kayıttaki değerle değil, sonraki çekişler düşülmüş bugünkü değerle dolar
+  state.invValueShown = inv && hasManualValue(inv) ? (Math.round(valueNow(inv) * 100) / 100).toFixed(2) : '';
+  f.current_value.value = state.invValueShown;
+  $('#inv-value-hint').textContent = inv && hasManualValue(inv)
+    ? `Son güncelleme ${stampFmt.format(new Date(inv.current_value_at))}. Bugünkü toplam değerini yaz; sonraki bozdurmalar bundan düşülür.`
+    : 'Fon gibi fiyatı otomatik takip edilemeyen yatırımın bugünkü toplam değeri.';
   // Bozdurulmuş yatırımın tutarı/miktarı/bağlı olduğu ay değişirse geçmiş aylar ve kalan hesabı bozulur.
   const locked = !!inv && withdrawalsOf(inv).length > 0;
   for (const name of ['asset_type', 'rate_code', 'quantity', 'amount', 'funded_month']) f[name].disabled = locked;
   $('#inv-lock').textContent = locked ? `Bu yatırımdan çekiş yapıldı; tutarı ve bağlı olduğu ay değiştirilemez. Kalan: ${
     isPriced(inv) ? `${qtyFmt(qtyLeft(inv))} ${UNITS[inv.rate_code]?.unit ?? ''}` : fmt(costLeft(inv))}` : '';
   $('#inv-delete').classList.toggle('hidden', !inv || locked);
-  $('#inv-withdraw').classList.toggle('hidden', !inv || costLeft(inv) <= 0);
+  $('#inv-withdraw').classList.toggle('hidden', !inv || !hasLeft(inv));
   $('#inv-dialog').showModal();
 }
 
@@ -718,6 +752,12 @@ $('#inv-form').addEventListener('submit', async (e) => {
     date: f.date.value,
     funded_month: f.funded_month.value || null,
   };
+  // değer yalnızca değiştirildiyse yeniden damgalanır; fiyatı takip edilende tutulmaz
+  if (row.rate_code) Object.assign(row, { current_value: null, current_value_at: null });
+  else if (f.current_value.value !== state.invValueShown) {
+    const v = f.current_value.value;
+    Object.assign(row, { current_value: v === '' ? null : Number(v), current_value_at: v === '' ? null : new Date().toISOString() });
+  }
   const q = state.editingInv
     ? sb.from('investments').update(row).eq('id', state.editingInv.id)
     : sb.from('investments').insert(row);
@@ -747,7 +787,8 @@ function openWdDialog(inv, w) {
   $('#wd-title').textContent = w ? 'Çekişi düzenle' : 'Yatırımı boz / çek';
   const priced = isPriced(inv);
   const unit = UNITS[inv.rate_code]?.unit ?? '';
-  $('#wd-info').textContent = `${invName(inv)} — kalan ${priced ? `${qtyFmt(qtyLeft(inv, w?.id))} ${unit}, ` : ''}maliyet ${fmt(costLeft(inv, w?.id))}`;
+  const val = valueNow(inv, w?.id);
+  $('#wd-info').textContent = `${invName(inv)} — kalan ${priced ? `${qtyFmt(qtyLeft(inv, w?.id))} ${unit}, ` : ''}maliyet ${fmt(costLeft(inv, w?.id))}${val != null ? `, bugün ${fmt(val)}` : ''}`;
   $('#wd-qty-row').classList.toggle('hidden', !priced);
   $('#wd-qty-label').textContent = `Satılan miktar (${unit})`;
   f.quantity.required = priced;
@@ -766,7 +807,8 @@ function updateWdHint() {
   const inv = state.wdInv;
   if (!inv) return;
   const over = isPriced(inv) ? Number(f.quantity.value || 0) > qtyLeft(inv, state.editingWd?.id)
-    : Number(f.amount.value || 0) + Number(f.tax.value || 0) > costLeft(inv, state.editingWd?.id);
+    : Number(f.amount.value || 0) + Number(f.tax.value || 0)
+      > (hasManualValue(inv) ? valueNow(inv, state.editingWd?.id) : costLeft(inv, state.editingWd?.id));
   const month = f.date.value ? monthFmt.format(parseDate(f.date.value)) : 'O ayın';
   $('#wd-hint').textContent = over ? 'Kalandan fazla çekiliyor; kalan sıfırlanır.'
     : `Net tutar ${month} kenarda kalanına eklenir. Bu parayla ödediğin gideri ayrıca girebilirsin.`;

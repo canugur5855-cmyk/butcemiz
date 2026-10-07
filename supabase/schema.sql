@@ -247,6 +247,12 @@ create policy "rates_select" on public.rates
 
 alter table public.investments add column rate_code text;
 
+-- Fiyatı otomatik çekilemeyen yatırımlarda (fon vb.) elle girilen güncel değer ve girildiği an.
+-- Bu andan sonra yapılan çekişler (net + stopaj) değerden düşülür.
+alter table public.investments
+  add column current_value numeric(14, 2) check (current_value is null or current_value >= 0),
+  add column current_value_at timestamptz;
+
 create or replace function private.update_rates()
 returns void
 language plpgsql
