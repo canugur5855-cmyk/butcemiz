@@ -312,3 +312,44 @@ revoke all on function private.update_rates() from public, anon, authenticated;
 
 -- İstanbul saatiyle 10:00 ve 17:00 (UTC 07:00 ve 14:00)
 select cron.schedule('update-rates', '0 7,14 * * *', 'select private.update_rates()');
+
+-- ---------------------------------------------------------------
+-- 2026-11-25: Eşler birbirinin kayıtlarını düzenleyip silebilir ve birbirinin adına kayıt girebilir.
+-- Kaydın sahibi (user_id) hane üyelerinden biri olmak zorunda. Yukarıdaki *_own politikalarının yerini alır.
+-- ---------------------------------------------------------------
+create or replace function private.is_member_id(uid uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$ select exists (select 1 from public.profiles where id = uid); $$;
+revoke all on function private.is_member_id(uuid) from public, anon;
+grant execute on function private.is_member_id(uuid) to authenticated;
+
+do $$
+declare t text; p text;
+begin
+  foreach t in array array['transactions', 'investments', 'expected_incomes', 'withdrawals'] loop
+    p := case t when 'expected_incomes' then 'expected' else t end;
+    execute format('drop policy if exists %I on public.%I', p || '_insert_own', t);
+    execute format('drop policy if exists %I on public.%I', p || '_update_own', t);
+    execute format('drop policy if exists %I on public.%I', p || '_delete_own', t);
+    execute format('create policy %I on public.%I for insert to authenticated with check ((select private.is_member()) and private.is_member_id(user_id))', p || '_insert', t);
+    execute format('create policy %I on public.%I for update to authenticated using ((select private.is_member())) with check ((select private.is_member()) and private.is_member_id(user_id))', p || '_update', t);
+    execute format('create policy %I on public.%I for delete to authenticated using ((select private.is_member()))', p || '_delete', t);
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------
+-- 2026-11-25: Sade yatırım modeli. Yatırım = alınan/bozdurulan şeyin kendi cinsinden miktarı
+-- (300 $, 5 gr ...) + o gün verilen/alınan TL. TL sadece o ayın "elde kalan" hesabına girer;
+-- güncel kur ile değerleme ve "hangi aydan yapıldı" bağlantısı kaldırıldı.
+-- Bozdurma artık aynı tabloda kind = 'sell' satırıdır (withdrawals tablosu kullanılmıyor).
+-- Taşımadan önceki yedekler: private.backup_*_20261125
+-- Beklenen gelirlerdeki received sadece "ödendi" notudur, gelirlere hiçbir şey eklemez.
+-- ---------------------------------------------------------------
+alter table public.investments
+  add column kind text not null default 'buy' check (kind in ('buy', 'sell')),
+  add column asset text not null,
+  add column unit text not null,
+  add column note text,
+  alter column quantity set not null,
+  add constraint investments_quantity_positive check (quantity > 0);
+alter table public.investments alter column asset_type set default 'Diğer';
