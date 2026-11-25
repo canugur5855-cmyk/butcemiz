@@ -353,3 +353,18 @@ alter table public.investments
   alter column quantity set not null,
   add constraint investments_quantity_positive check (quantity > 0);
 alter table public.investments alter column asset_type set default 'Diğer';
+
+-- ---------------------------------------------------------------
+-- 2026-11-25: Aktarma. Bir eşin yatırımının bir kısmı diğerine geçer (ör. jest olarak 100 €).
+-- user_id = veren, to_user_id = alan. TL yok (amount = 0), ay hesabına karışmaz.
+-- ---------------------------------------------------------------
+alter table public.investments
+  add column to_user_id uuid references public.profiles (id) on delete cascade;
+create index investments_to_user_id_idx on public.investments (to_user_id);
+alter table public.investments drop constraint investments_kind_check;
+alter table public.investments drop constraint investments_amount_check;
+alter table public.investments
+  add constraint investments_kind_check check (kind in ('buy', 'sell', 'transfer')),
+  add constraint investments_amount_check check (case when kind = 'transfer' then amount = 0 else amount > 0 end),
+  add constraint investments_transfer_check check (
+    (kind = 'transfer') = (to_user_id is not null) and (to_user_id is null or to_user_id <> user_id));

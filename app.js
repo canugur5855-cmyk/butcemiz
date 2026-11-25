@@ -84,7 +84,16 @@ function holdingText(asset, unit, qty) {
   if (unit === 'adet') return `${q} ${asset}`;
   return `${q} ${unit} ${asset}`;
 }
-function signedQty(x) { return x.kind === 'sell' ? -Number(x.quantity) : Number(x.quantity); }
+// Aktarma (kind = 'transfer'): user_id veren, to_user_id alan; TL yok, ay hesabına karışmaz.
+function involves(x, id) { return x.user_id === id || x.to_user_id === id; }
+// Miktarın kişiye göre işareti; id verilmezse hane toplamı (aktarma toplamı değiştirmez)
+function qtyFor(x, id = null) {
+  const q = Number(x.quantity);
+  if (x.kind === 'buy') return q;
+  if (x.kind === 'sell') return -q;
+  if (!id) return 0;
+  return x.user_id === id ? -q : q;
+}
 
 // ---------- kimlik doğrulama ----------
 // Kullanıcı adıyla giriş: Supabase arka planda e-posta istediği için kullanıcı adı sabit bir
@@ -229,12 +238,12 @@ function monthTotals(month = state.month) {
   return { income, expense, bought, sold, left: income - expense - bought + sold };
 }
 // Kişinin (ya da herkesin) elindeki yatırımlar: alınan − bozdurulan, kendi cinsinden
-function holdings(rows) {
+function holdings(rows, id = null) {
   const m = new Map();
   for (const x of rows) {
     const k = assetKey(x);
     const h = m.get(k) ?? { asset: x.asset, unit: x.unit, qty: 0 };
-    h.qty += signedQty(x);
+    h.qty += qtyFor(x, id);
     m.set(k, h);
   }
   return [...m.values()].filter((h) => Math.abs(h.qty) > 1e-9).sort((a, b) => a.asset.localeCompare(b.asset, 'tr'));
@@ -251,12 +260,12 @@ function render() {
 }
 
 // İki sütun: her kişinin kalemleri alt alta, en altta (istenirse) kişinin toplamı
-function columns(rows, itemHtml, totalOf) {
+function columns(rows, itemHtml, totalOf, belongs = (r, id) => r.user_id === id) {
   return state.people.map((id) => {
-    const mine = rows.filter((r) => r.user_id === id);
+    const mine = rows.filter((r) => belongs(r, id));
     return `<div class="col">
       <div class="col-head">${esc(nameOf(id))}</div>
-      ${mine.length ? `<ul class="mini-list">${mine.map(itemHtml).join('')}</ul>` : '<p class="col-empty">—</p>'}
+      ${mine.length ? `<ul class="mini-list">${mine.map((r) => itemHtml(r, id)).join('')}</ul>` : '<p class="col-empty">—</p>'}
       ${totalOf ? `<div class="col-total"><span>Toplam</span><strong>${fmt(totalOf(mine))}</strong></div>` : ''}
     </div>`;
   }).join('');
@@ -268,11 +277,14 @@ function txMini(t) {
     <small>${day(t.date)}${t.note ? ` · ${esc(t.note)}` : ''}</small>
   </li>`;
 }
-function invMini(x) {
-  const sell = x.kind === 'sell';
-  return `<li class="mini editable ${sell ? 'sell' : ''}" data-type="inv" data-id="${x.id}">
-    <div class="mini-top"><span>${sell ? '−' : '+'}${esc(holdingText(x.asset, x.unit, x.quantity))}</span></div>
-    <small>${day(x.date)}${sell ? ' · bozduruldu' : ''}${x.note ? ` · ${esc(x.note)}` : ''}</small>
+// id: hangi kişinin sütununda gösterildiği (aktarma verende −, alanda + görünür)
+function invMini(x, id) {
+  const out = qtyFor(x, id) < 0;
+  const what = x.kind === 'sell' ? ' · bozduruldu'
+    : x.kind === 'transfer' ? (out ? ` · ${esc(toName(nameOf(x.to_user_id)))} aktarıldı` : ` · ${esc(fromName(nameOf(x.user_id)))} geldi`) : '';
+  return `<li class="mini editable ${out ? 'sell' : ''}" data-type="inv" data-id="${x.id}">
+    <div class="mini-top"><span>${out ? '−' : '+'}${esc(holdingText(x.asset, x.unit, x.quantity))}</span></div>
+    <small>${day(x.date)}${what}${x.note ? ` · ${esc(x.note)}` : ''}</small>
   </li>`;
 }
 
@@ -285,7 +297,7 @@ function renderSummary() {
   $('#out-total').textContent = fmt(amt(out));
   $('#inc-cols').innerHTML = columns(inc, txMini, amt);
   $('#out-cols').innerHTML = columns(out, txMini, amt);
-  $('#inv-cols').innerHTML = columns(inMonth(state.investments), invMini, null);
+  $('#inv-cols').innerHTML = columns(inMonth(state.investments), invMini, null, involves);
   const { left } = monthTotals();
   $('#month-left').textContent = fmt(left);
   $('#month-left').classList.toggle('negative', left < 0);
@@ -295,7 +307,7 @@ function renderTransactions() {
   // filtre düğmeleri isimlerle: Hepsi / Uğur / İzgi
   $('#tx-filter').innerHTML = [['all', 'Hepsi'], ...state.people.map((id) => [id, nameOf(id)])]
     .map(([v, label]) => `<button data-filter="${v}" class="${state.txFilter === v ? 'active' : ''}">${esc(label)}</button>`).join('');
-  const own = (r) => state.txFilter === 'all' || r.user_id === state.txFilter;
+  const own = (r) => state.txFilter === 'all' || involves(r, state.txFilter);
 
   const tx = inMonth(state.transactions).filter(own);
   const inv = inMonth(state.investments).filter(own);
@@ -315,6 +327,15 @@ function renderTransactions() {
   $('#tx-empty').classList.toggle('hidden', rows.length > 0);
   $('#tx-list').innerHTML = rows.map((r) => {
     let title, cls, sign;
+    if (r.type === 'inv' && r.kind === 'transfer') {
+      return `<li class="item editable" data-type="inv" data-id="${r.id}">
+      <div class="item-main">
+        <div class="item-title">🔁 ${esc(holdingText(r.asset, r.unit, r.quantity))} aktarıldı${r.note ? ` <span class="muted">· ${esc(r.note)}</span>` : ''}</div>
+        <div class="item-sub">${day(r.date)} <span class="who">${esc(nameOf(r.user_id))} → ${esc(nameOf(r.to_user_id))}</span> <span class="tag">yatırım</span></div>
+      </div>
+      <div class="amount muted-amount">TL yok</div>
+    </li>`;
+    }
     if (r.type === 'inv') {
       const sell = r.kind === 'sell';
       title = `${sell ? '↩' : '📈'} ${esc(holdingText(r.asset, r.unit, r.quantity))} ${sell ? 'bozduruldu' : 'alındı'}`;
@@ -344,11 +365,11 @@ function holdingsHtml(list) {
 function renderSavings() {
   $('#sv-total').innerHTML = holdingsHtml(holdings(state.investments));
   $('#sv-cols').innerHTML = state.people.map((id) => {
-    const mine = state.investments.filter((x) => x.user_id === id);
+    const mine = state.investments.filter((x) => involves(x, id));
     return `<div class="col">
       <div class="col-head">${esc(nameOf(id))}</div>
-      <div class="holdings">${holdingsHtml(holdings(mine))}</div>
-      ${mine.length ? `<div class="col-sub">Kalem kalem</div><ul class="mini-list">${mine.map(invMini).join('')}</ul>` : ''}
+      <div class="holdings">${holdingsHtml(holdings(mine, id))}</div>
+      ${mine.length ? `<div class="col-sub">Kalem kalem</div><ul class="mini-list">${mine.map((x) => invMini(x, id)).join('')}</ul>` : ''}
     </div>`;
   }).join('');
 }
@@ -519,10 +540,12 @@ function updateInvHint() {
   $('#inv-qty-label').textContent = unit ? `Miktar (${unit})` : 'Miktar';
   const owner = $('#tx-owner').dataset.value;
   const editId = state.editing?.type === 'inv' ? state.editing.row.id : null;
-  const have = sum(state.investments.filter((x) => x.user_id === owner && x.asset === asset && x.unit === unit && x.id !== editId), signedQty);
-  if (state.dir === 'sell' && asset) {
+  const have = sum(state.investments.filter((x) => involves(x, owner) && x.asset === asset && x.unit === unit && x.id !== editId),
+    (x) => qtyFor(x, owner));
+  if (state.dir !== 'buy' && asset) {
     const over = Number(f.quantity.value || 0) > have + 1e-9;
-    $('#inv-hint').textContent = `${nameOf(owner)}: elde ${holdingText(asset, unit, have)}${over ? ' — bundan fazlası bozduruluyor!' : ''}`;
+    const to = state.dir === 'transfer' ? `${nameOf(owner)} → ${nameOf(otherOf(owner))} · ` : '';
+    $('#inv-hint').textContent = `${to}${nameOf(owner)}: elde ${holdingText(asset, unit, have)}${over ? ` — bundan fazlası ${state.dir === 'sell' ? 'bozduruluyor' : 'aktarılıyor'}!` : ''}`;
     $('#inv-hint').classList.toggle('warn', over);
   } else {
     $('#inv-hint').textContent = '';
@@ -539,11 +562,22 @@ function setKind(kind) {
   if (!inv) renderCategories(kind, state.editing?.type === 'tx' && state.editing.row.kind === kind ? state.editing.row.category : null);
   setDir(state.dir);
 }
+// Türkçe ek: Uğur'a / İzgi'ye, Uğur'dan / İzgi'den
+function lastVowel(w) { return [...w.toLocaleLowerCase('tr')].reverse().find((c) => 'aeıioöuü'.includes(c)) ?? 'e'; }
+function toName(n) { const back = 'aıou'.includes(lastVowel(n)); const v = 'aeıioöuü'.includes(n.slice(-1).toLocaleLowerCase('tr')); return `${n}'${v ? 'y' : ''}${back ? 'a' : 'e'}`; }
+function fromName(n) { const back = 'aıou'.includes(lastVowel(n)); const hard = 'çfhkpsşt'.includes(n.slice(-1).toLocaleLowerCase('tr')); return `${n}'${hard ? 't' : 'd'}${back ? 'an' : 'en'}`; }
+function otherOf(id) { return state.people.find((p) => p !== id); }
+// Aktarmada TL girilmez; "kimin" seçimi veren kişidir, alan otomatik olarak diğer eş olur.
 function setDir(dir) {
   state.dir = dir;
   $('#inv-dir').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.dir === dir));
+  const transfer = state.kind === 'invest' && dir === 'transfer';
   $('#amount-label').textContent = state.kind !== 'invest' ? 'Tutar (₺)'
     : dir === 'buy' ? 'Kaç TL verdiniz? (₺)' : 'Eline geçen TL (₺)';
+  $('#amount-label').classList.toggle('hidden', transfer);
+  const amount = $('#tx-form').amount;
+  amount.classList.toggle('hidden', transfer);
+  amount.disabled = transfer;
   updateInvHint();
 }
 
@@ -569,7 +603,7 @@ function openEntry(editing, kind = 'expense') {
   state.dir = editing?.type === 'inv' ? r.kind : 'buy';
   renderAssets(editing?.type === 'inv' ? assetKey(r) : undefined);
   setKind(k);
-  f.amount.value = r?.amount ?? '';
+  f.amount.value = r && Number(r.amount) > 0 ? r.amount : '';
   f.quantity.value = editing?.type === 'inv' ? Number(r.quantity) : '';
   f.date.value = r?.date ?? defaultDate();
   f.note.value = r?.note ?? '';
@@ -592,7 +626,8 @@ $('#tx-form').addEventListener('submit', async (e) => {
     const { asset, unit } = currentAsset();
     if (!asset) return;
     table = 'investments';
-    row = { ...base, kind: state.dir, asset, unit, quantity: Number(f.quantity.value) };
+    row = { ...base, kind: state.dir, asset, unit, quantity: Number(f.quantity.value), to_user_id: null };
+    if (state.dir === 'transfer') Object.assign(row, { amount: 0, to_user_id: otherOf(base.user_id) });
   } else {
     table = 'transactions';
     row = { ...base, kind: state.kind, category: state.category };
