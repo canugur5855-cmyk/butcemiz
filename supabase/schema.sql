@@ -368,3 +368,25 @@ alter table public.investments
   add constraint investments_amount_check check (case when kind = 'transfer' then amount = 0 else amount > 0 end),
   add constraint investments_transfer_check check (
     (kind = 'transfer') = (to_user_id is not null) and (to_user_id is null or to_user_id <> user_id));
+
+-- ---------------------------------------------------------------
+-- 2026-11-26: Açılış yatırımları. opening = uygulamayı kullanmaya başlamadan önce zaten elde olan
+-- yatırım; birikimde sayılır ama TL'si o ayın "elde kalan" hesabına girmez.
+-- Ekim 2026'da bunları dengelemek için girilen "Diğer" gelirler silindi
+-- (yedek: private.backup_opening_incomes_20261126).
+-- ---------------------------------------------------------------
+alter table public.investments add column opening boolean not null default false;
+
+-- ---------------------------------------------------------------
+-- 2026-11-26: Döviz/altın olarak gelen gelir (ör. ek iş ödemesi 500 $). investments'ta kind = 'income':
+-- miktar doğrudan birikime girer, TL yok (amount = 0), ayın elde kalanına karışmaz.
+-- category gelir kategorisidir (sadece kind = 'income' için).
+-- Süleyman Uzun ödemeleri (2 × 500 $) bu şekle çevrildi; TL gelir kayıtları yedekte.
+-- ---------------------------------------------------------------
+alter table public.investments add column category text;
+alter table public.investments drop constraint investments_kind_check;
+alter table public.investments drop constraint investments_amount_check;
+alter table public.investments
+  add constraint investments_kind_check check (kind in ('buy', 'sell', 'transfer', 'income')),
+  add constraint investments_amount_check check (
+    case when kind in ('transfer', 'income') then amount = 0 else amount > 0 end);

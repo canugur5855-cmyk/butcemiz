@@ -25,7 +25,8 @@ const state = {
   editing: null,         // { type: 'tx' | 'inv', row }
   kind: 'expense',       // expense | income | invest
   category: null,
-  dir: 'buy',            // buy | sell
+  dir: 'buy',            // buy | sell | transfer
+  incCur: 'tl',          // gelir: tl | asset (döviz/altın olarak gelen)
   asset: null,           // "ad|birim" ya da CUSTOM
   // beklenen gelir formu
   editingExp: null,
@@ -85,11 +86,12 @@ function holdingText(asset, unit, qty) {
   return `${q} ${unit} ${asset}`;
 }
 // Aktarma (kind = 'transfer'): user_id veren, to_user_id alan; TL yok, ay hesabına karışmaz.
+// Döviz/altın gelir (kind = 'income'): gelir olarak gelen 500 $ gibi; doğrudan birikime girer, TL yok.
 function involves(x, id) { return x.user_id === id || x.to_user_id === id; }
 // Miktarın kişiye göre işareti; id verilmezse hane toplamı (aktarma toplamı değiştirmez)
 function qtyFor(x, id = null) {
   const q = Number(x.quantity);
-  if (x.kind === 'buy') return q;
+  if (x.kind === 'buy' || x.kind === 'income') return q;
   if (x.kind === 'sell') return -q;
   if (!id) return 0;
   return x.user_id === id ? -q : q;
@@ -224,6 +226,8 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- hesaplar ----------
+// Ayın parasından çıkan alım; 'opening' = uygulamadan önce zaten elde olan, TL'si o aya girmez
+function spent(x) { return x.kind === 'buy' && !x.opening; }
 function inMonth(rows, month = state.month) {
   const key = monthKey(month);
   return rows.filter((r) => r.date.startsWith(key));
@@ -233,7 +237,7 @@ function monthTotals(month = state.month) {
   const inv = inMonth(state.investments, month);
   const income = sum(tx.filter((t) => t.kind === 'income'), (t) => t.amount);
   const expense = sum(tx.filter((t) => t.kind === 'expense'), (t) => t.amount);
-  const bought = sum(inv.filter((x) => x.kind === 'buy'), (x) => x.amount);
+  const bought = sum(inv.filter(spent), (x) => x.amount);
   const sold = sum(inv.filter((x) => x.kind === 'sell'), (x) => x.amount);
   return { income, expense, bought, sold, left: income - expense - bought + sold };
 }
@@ -277,10 +281,20 @@ function txMini(t) {
     <small>${day(t.date)}${t.note ? ` · ${esc(t.note)}` : ''}</small>
   </li>`;
 }
+// Gelir sütununda hem TL gelirler hem döviz/altın olarak gelenler
+function incMini(r) {
+  if (r.type !== 'inv') return txMini(r);
+  return `<li class="mini editable" data-type="inv" data-id="${r.id}">
+    <div class="mini-top"><span>${esc(r.category || 'Gelir')}</span><b>${esc(holdingText(r.asset, r.unit, r.quantity))}</b></div>
+    <small>${day(r.date)}${r.note ? ` · ${esc(r.note)}` : ''}</small>
+  </li>`;
+}
 // id: hangi kişinin sütununda gösterildiği (aktarma verende −, alanda + görünür)
 function invMini(x, id) {
   const out = qtyFor(x, id) < 0;
   const what = x.kind === 'sell' ? ' · bozduruldu'
+    : x.opening ? ' · önceden vardı'
+    : x.kind === 'income' ? ` · gelir${x.category ? ` (${esc(x.category)})` : ''}`
     : x.kind === 'transfer' ? (out ? ` · ${esc(toName(nameOf(x.to_user_id)))} aktarıldı` : ` · ${esc(fromName(nameOf(x.user_id)))} geldi`) : '';
   return `<li class="mini editable ${out ? 'sell' : ''}" data-type="inv" data-id="${x.id}">
     <div class="mini-top"><span>${out ? '−' : '+'}${esc(holdingText(x.asset, x.unit, x.quantity))}</span></div>
@@ -295,7 +309,8 @@ function renderSummary() {
   const amt = (rows) => sum(rows, (t) => t.amount);
   $('#inc-total').textContent = fmt(amt(inc));
   $('#out-total').textContent = fmt(amt(out));
-  $('#inc-cols').innerHTML = columns(inc, txMini, amt);
+  const incAll = [...inc, ...inMonth(state.investments).filter((x) => x.kind === 'income').map((x) => ({ ...x, type: 'inv' }))].sort(byNewest);
+  $('#inc-cols').innerHTML = columns(incAll, incMini, amt);
   $('#out-cols').innerHTML = columns(out, txMini, amt);
   $('#inv-cols').innerHTML = columns(inMonth(state.investments), invMini, null, involves);
   const { left } = monthTotals();
@@ -313,7 +328,7 @@ function renderTransactions() {
   const inv = inMonth(state.investments).filter(own);
   const income = sum(tx.filter((t) => t.kind === 'income'), (t) => t.amount);
   const expense = sum(tx.filter((t) => t.kind === 'expense'), (t) => t.amount);
-  const bought = sum(inv.filter((x) => x.kind === 'buy'), (x) => x.amount);
+  const bought = sum(inv.filter(spent), (x) => x.amount);
   const sold = sum(inv.filter((x) => x.kind === 'sell'), (x) => x.amount);
   const left = income - expense - bought + sold;
   $('#tx-strip').innerHTML = `
@@ -327,6 +342,24 @@ function renderTransactions() {
   $('#tx-empty').classList.toggle('hidden', rows.length > 0);
   $('#tx-list').innerHTML = rows.map((r) => {
     let title, cls, sign;
+    if (r.type === 'inv' && r.kind === 'income') {
+      return `<li class="item editable" data-type="inv" data-id="${r.id}">
+      <div class="item-main">
+        <div class="item-title">${esc(r.category || 'Gelir')}${r.note ? ` <span class="muted">· ${esc(r.note)}</span>` : ''}</div>
+        <div class="item-sub">${day(r.date)} <span class="who">${esc(nameOf(r.user_id))}</span> <span class="tag">birikime girdi</span></div>
+      </div>
+      <div class="amount income">+${esc(holdingText(r.asset, r.unit, r.quantity))}</div>
+    </li>`;
+    }
+    if (r.type === 'inv' && r.opening) {
+      return `<li class="item editable" data-type="inv" data-id="${r.id}">
+      <div class="item-main">
+        <div class="item-title">📦 ${esc(holdingText(r.asset, r.unit, r.quantity))} önceden vardı${r.note ? ` <span class="muted">· ${esc(r.note)}</span>` : ''}</div>
+        <div class="item-sub">${day(r.date)} <span class="who">${esc(nameOf(r.user_id))}</span> <span class="tag">yatırım</span></div>
+      </div>
+      <div class="amount muted-amount">TL yok</div>
+    </li>`;
+    }
     if (r.type === 'inv' && r.kind === 'transfer') {
       return `<li class="item editable" data-type="inv" data-id="${r.id}">
       <div class="item-main">
@@ -533,8 +566,9 @@ function currentAsset() {
 }
 
 // Miktar etiketi ve bozdururken "elinde ne kadar var" bilgisi
+function inKind() { return state.kind === 'income' && state.incCur === 'asset'; }
 function updateInvHint() {
-  if (state.kind !== 'invest' || !state.asset) return;
+  if (!(state.kind === 'invest' || inKind()) || !state.asset) return;
   const f = $('#tx-form');
   const { asset, unit } = currentAsset();
   $('#inv-qty-label').textContent = unit ? `Miktar (${unit})` : 'Miktar';
@@ -542,7 +576,7 @@ function updateInvHint() {
   const editId = state.editing?.type === 'inv' ? state.editing.row.id : null;
   const have = sum(state.investments.filter((x) => involves(x, owner) && x.asset === asset && x.unit === unit && x.id !== editId),
     (x) => qtyFor(x, owner));
-  if (state.dir !== 'buy' && asset) {
+  if (state.kind === 'invest' && state.dir !== 'buy' && asset) {
     const over = Number(f.quantity.value || 0) > have + 1e-9;
     const to = state.dir === 'transfer' ? `${nameOf(owner)} → ${nameOf(otherOf(owner))} · ` : '';
     $('#inv-hint').textContent = `${to}${nameOf(owner)}: elde ${holdingText(asset, unit, have)}${over ? ` — bundan fazlası ${state.dir === 'sell' ? 'bozduruluyor' : 'aktarılıyor'}!` : ''}`;
@@ -556,10 +590,15 @@ function setKind(kind) {
   state.kind = kind;
   $('#tx-kind').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
   const inv = kind === 'invest';
-  $('#inv-fields').classList.toggle('hidden', !inv);
-  $('#inv-fields').disabled = !inv;
+  const assetForm = inv || inKind();
+  // TL / döviz-altın seçimi sadece yeni gelirde (düzenlerken tablo değişmesin)
+  $('#inc-cur').classList.toggle('hidden', kind !== 'income' || !!state.editing);
+  $('#inc-cur').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.cur === state.incCur));
+  $('#inv-fields').classList.toggle('hidden', !assetForm);
+  $('#inv-fields').disabled = !assetForm;
+  $('#inv-dir').classList.toggle('hidden', !inv);
   $('#tx-category').classList.toggle('hidden', inv);
-  if (!inv) renderCategories(kind, state.editing?.type === 'tx' && state.editing.row.kind === kind ? state.editing.row.category : null);
+  if (!inv) renderCategories(kind, state.editing?.row.kind === kind ? state.editing.row.category : null);
   setDir(state.dir);
 }
 // Türkçe ek: Uğur'a / İzgi'ye, Uğur'dan / İzgi'den
@@ -571,7 +610,7 @@ function otherOf(id) { return state.people.find((p) => p !== id); }
 function setDir(dir) {
   state.dir = dir;
   $('#inv-dir').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.dir === dir));
-  const transfer = state.kind === 'invest' && dir === 'transfer';
+  const transfer = (state.kind === 'invest' && dir === 'transfer') || inKind();
   $('#amount-label').textContent = state.kind !== 'invest' ? 'Tutar (₺)'
     : dir === 'buy' ? 'Kaç TL verdiniz? (₺)' : 'Eline geçen TL (₺)';
   $('#amount-label').classList.toggle('hidden', transfer);
@@ -582,6 +621,12 @@ function setDir(dir) {
 }
 
 $('#tx-kind').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setKind(b.dataset.kind); });
+$('#inc-cur').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  state.incCur = b.dataset.cur;
+  setKind('income');
+});
 $('#inv-dir').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setDir(b.dataset.dir); });
 $('#tx-category').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setCategory(b.dataset.cat); });
 $('#inv-assets').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setAsset(b.dataset.asset); });
@@ -593,7 +638,9 @@ function openEntry(editing, kind = 'expense') {
   const r = editing?.row;
   const f = $('#tx-form');
   f.reset();
-  const k = editing ? (editing.type === 'inv' ? 'invest' : r.kind) : kind;
+  const incomeAsset = editing?.type === 'inv' && r.kind === 'income';
+  const k = editing ? (editing.type === 'inv' && !incomeAsset ? 'invest' : r.kind) : kind;
+  state.incCur = incomeAsset ? 'asset' : 'tl';
   $('#tx-title').textContent = !editing ? 'Yeni kayıt' : k === 'invest' ? 'Yatırımı düzenle' : 'Kaydı düzenle';
   $('#tx-delete').classList.toggle('hidden', !editing);
   // düzenlerken gelir/gider yatırıma ya da yatırım gelir/gidere çevrilemez
@@ -622,12 +669,13 @@ $('#tx-form').addEventListener('submit', async (e) => {
     user_id: $('#tx-owner').dataset.value,
   };
   let table, row;
-  if (state.kind === 'invest') {
+  if (state.kind === 'invest' || inKind()) {
     const { asset, unit } = currentAsset();
     if (!asset) return;
     table = 'investments';
     row = { ...base, kind: state.dir, asset, unit, quantity: Number(f.quantity.value), to_user_id: null };
     if (state.dir === 'transfer') Object.assign(row, { amount: 0, to_user_id: otherOf(base.user_id) });
+    if (inKind()) Object.assign(row, { kind: 'income', amount: 0, category: state.category });
   } else {
     table = 'transactions';
     row = { ...base, kind: state.kind, category: state.category };
